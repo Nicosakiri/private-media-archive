@@ -28,6 +28,16 @@
 - “观看日历”按日期汇总每一次记录，并用蓝、绿、红三色表示进行中、已看完和已弃。
 - 统计页分为“书影音统计”和“网络小说统计”；网络文学不会混入书影音总数、评分或图表。
 
+## EdgeOne Makers 部署
+
+腾讯部署使用仓库内已经编译好的独立目录，避免与 Cloudflare 所需的 Next.js
+依赖互相影响。在 EdgeOne 项目的“构建部署配置”中设置：
+
+- 框架预设：React
+- 根目录：`edgeone-deploy`
+
+其余安装、编译和输出目录由 `edgeone-deploy/edgeone.json` 自动配置。
+
 ---
 
 A clean full-stack starter running on
