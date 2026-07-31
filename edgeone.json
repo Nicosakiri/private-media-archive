@@ -1,0 +1,12 @@
+{
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm run build:edgeone",
+  "outputDirectory": "edgeone-dist",
+  "nodeVersion": "22.17.1",
+  "rewrites": [
+    {
+      "source": "/*",
+      "destination": "/index.html"
+    }
+  ]
+}

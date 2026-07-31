@@ -39,6 +39,7 @@ next-env.d.ts
 *.tsbuildinfo
 preview/
 /dist/
+/edgeone-dist/
 /.wrangler/
 /outputs/
 /work/
