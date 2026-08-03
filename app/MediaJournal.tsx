@@ -6,11 +6,14 @@ import {
   FormEvent,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
+  listLocalDeletedEntries,
   listLocalEntries,
   removeLocalEntry,
+  replaceLocalArchive,
   saveLocalEntry,
 } from "./local-entry-store";
 import {
@@ -39,6 +42,13 @@ import type {
   SeriesCategory,
   WebFictionType,
 } from "./media-types";
+import {
+  ARCHIVE_FORMAT,
+  ARCHIVE_VERSION,
+  mergeArchives,
+  parseArchive,
+  type LocalArchive,
+} from "./sync-model";
 
 type DoubanLookupResult = {
   id: string;
@@ -93,14 +103,53 @@ type LocalUserProfile = {
   avatar: string;
 };
 
+type LanSyncStatus = {
+  available: true;
+  isHost: boolean;
+  pairingCode: string | null;
+  urls: string[];
+  revision: number;
+  updatedAt: string;
+  entryCount: number;
+};
+
 const defaultUserProfile: LocalUserProfile = {
   name: "Nicosakiri",
-  avatar: "/nicosakiri-avatar.png",
+  avatar: "nicosakiri-avatar.png",
 };
 
 const defaultHiddenWebFilters: HiddenWebFilter[] = ["all"];
 const HIDDEN_WEB_FILTERS_KEY = "pma-hidden-web-filters";
 const USER_PROFILE_KEY = "pma-local-user-profile";
+const DEVICE_ID_KEY = "pma-device-id";
+const LAN_PAIRING_CODE_KEY = "pma-lan-pairing-code";
+
+function createLocalId() {
+  const webCrypto = globalThis.crypto;
+  if (typeof webCrypto?.randomUUID === "function") {
+    return webCrypto.randomUUID();
+  }
+
+  if (typeof webCrypto?.getRandomValues === "function") {
+    const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    return [
+      hex.slice(0, 8),
+      hex.slice(8, 12),
+      hex.slice(12, 16),
+      hex.slice(16, 20),
+      hex.slice(20),
+    ].join("-");
+  }
+
+  return `pma-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 12)}`;
+}
 
 const today = () => {
   const date = new Date();
@@ -249,7 +298,7 @@ async function imageFileToAttachment(file: File): Promise<NoteImage> {
     reader.readAsDataURL(file);
   });
   return {
-    id: crypto.randomUUID(),
+    id: createLocalId(),
     name: file.name || "粘贴的图片",
     dataUrl,
   };
@@ -742,7 +791,7 @@ function WorldHeatMap({ counts }: { counts: Record<string, number> }) {
 
   useEffect(() => {
     let active = true;
-    fetch("/world-countries.geojson")
+    fetch("world-countries.geojson")
       .then((response) => {
         if (!response.ok) throw new Error("World map unavailable");
         return response.json() as Promise<WorldGeoJson>;
@@ -1555,6 +1604,14 @@ export function MediaJournal() {
   const [settingsShowHiddenDraft, setSettingsShowHiddenDraft] = useState(false);
   const [settingsProfileDraft, setSettingsProfileDraft] =
     useState<LocalUserProfile>(defaultUserProfile);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [syncMode, setSyncMode] = useState<"lan" | "airdrop">("lan");
+  const [lanStatus, setLanStatus] = useState<LanSyncStatus | null>(null);
+  const [lanPairingCode, setLanPairingCode] = useState("");
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncBusy, setSyncBusy] = useState(false);
+  const syncFileInput = useRef<HTMLInputElement>(null);
+  const lastLanRevision = useRef(0);
 
   async function loadEntries() {
     try {
@@ -1568,6 +1625,233 @@ export function MediaJournal() {
     }
   }
 
+  function localDeviceId() {
+    const saved = window.localStorage.getItem(DEVICE_ID_KEY);
+    if (saved) return saved;
+    const id = createLocalId();
+    window.localStorage.setItem(DEVICE_ID_KEY, id);
+    return id;
+  }
+
+  async function createLocalArchive(): Promise<LocalArchive> {
+    return {
+      format: ARCHIVE_FORMAT,
+      version: ARCHIVE_VERSION,
+      exportedAt: new Date().toISOString(),
+      deviceId: localDeviceId(),
+      entries,
+      deletedEntries: await listLocalDeletedEntries(),
+      preferences: {
+        theme,
+        hiddenWebFilters,
+        showHiddenEntries,
+        userProfile,
+      },
+    };
+  }
+
+  async function applyLocalArchive(archive: LocalArchive) {
+    await replaceLocalArchive(archive.entries, archive.deletedEntries);
+    const allowedFilters = new Set<HiddenWebFilter>([
+      "all",
+      "bg",
+      "danmei",
+      "gen",
+      "other",
+    ]);
+    const nextFilters = archive.preferences.hiddenWebFilters.filter(
+      (item): item is HiddenWebFilter => allowedFilters.has(item as HiddenWebFilter),
+    );
+    const nextProfile = {
+      name: archive.preferences.userProfile.name?.trim() || defaultUserProfile.name,
+      avatar: archive.preferences.userProfile.avatar || defaultUserProfile.avatar,
+    };
+    setTheme(archive.preferences.theme);
+    document.documentElement.dataset.theme = archive.preferences.theme;
+    setHiddenWebFilters(nextFilters);
+    setShowHiddenEntries(Boolean(archive.preferences.showHiddenEntries));
+    setUserProfile(nextProfile);
+    window.localStorage.setItem("liuhen-theme", archive.preferences.theme);
+    window.localStorage.setItem(HIDDEN_WEB_FILTERS_KEY, JSON.stringify(nextFilters));
+    window.localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(nextProfile));
+    setSelected(null);
+    await loadEntries();
+  }
+
+  async function fetchLanStatus() {
+    const response = await fetch("/__pma/sync/status", { cache: "no-store" });
+    if (!response.ok) throw new Error("当前页面没有连接到电脑端同步服务。");
+    return (await response.json()) as LanSyncStatus;
+  }
+
+  async function performLanSync(
+    code = lanPairingCode,
+    statusOverride?: LanSyncStatus,
+  ) {
+    const status = statusOverride || lanStatus;
+    if (!status) throw new Error("请先连接电脑端同步服务。");
+    if (!status.isHost && !/^\d{6}$/.test(code.trim())) {
+      throw new Error("请输入电脑上显示的六位配对码。");
+    }
+
+    const response = await fetch("/__pma/sync/merge", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(status.isHost ? {} : { "X-PMA-Pairing-Code": code.trim() }),
+      },
+      body: JSON.stringify({ archive: await createLocalArchive() }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "局域网同步失败。");
+    const archive = parseArchive(result.archive);
+    await applyLocalArchive(archive);
+    lastLanRevision.current = Number(result.revision) || 0;
+    setLanStatus((current) =>
+      current
+        ? {
+            ...current,
+            revision: lastLanRevision.current,
+            updatedAt: result.updatedAt || new Date().toISOString(),
+            entryCount: archive.entries.length,
+          }
+        : current,
+    );
+    if (!status.isHost) {
+      window.sessionStorage.setItem(LAN_PAIRING_CODE_KEY, code.trim());
+    }
+    setSyncMessage(
+      status.isHost
+        ? "电脑主数据库已准备好，手机现在可以连接并同步。"
+        : `同步完成：手机和电脑现在共有 ${archive.entries.length} 条记录。`,
+    );
+  }
+
+  async function openSyncCenter() {
+    setSyncOpen(true);
+    setSyncMessage("");
+    if (window.location.hostname.endsWith(".github.io")) {
+      setSyncMode("airdrop");
+      setLanStatus(null);
+      setSyncBusy(false);
+      return;
+    }
+    setSyncMode("lan");
+    setLanPairingCode(
+      window.sessionStorage.getItem(LAN_PAIRING_CODE_KEY) || "",
+    );
+    setSyncBusy(true);
+    try {
+      const status = await fetchLanStatus();
+      setLanStatus(status);
+      lastLanRevision.current = status.revision;
+      if (status.isHost) await performLanSync("", status);
+    } catch (syncError) {
+      setLanStatus(null);
+      setSyncMessage(
+        syncError instanceof Error
+          ? syncError.message
+          : "当前页面没有连接到电脑端同步服务。",
+      );
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function syncFromLan() {
+    setSyncBusy(true);
+    setSyncMessage("");
+    try {
+      await performLanSync();
+    } catch (syncError) {
+      setSyncMessage(
+        syncError instanceof Error ? syncError.message : "局域网同步失败。",
+      );
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function exportSyncPackage() {
+    setSyncBusy(true);
+    setSyncMessage("");
+    try {
+      const archive = await createLocalArchive();
+      const date = new Date().toISOString().slice(0, 10);
+      const file = new File([JSON.stringify(archive)], `PMA-${date}.pma`, {
+        type: "application/json",
+      });
+      let canShareFile = false;
+      try {
+        canShareFile = Boolean(
+          typeof navigator.share === "function" &&
+            navigator.canShare?.({ files: [file] }),
+        );
+      } catch {
+        canShareFile = false;
+      }
+
+      if (canShareFile) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: "Private Media Archive 同步包",
+          });
+          setSyncMessage("同步包已经交给系统分享菜单。");
+          return;
+        } catch (shareError) {
+          if (
+            shareError instanceof DOMException &&
+            shareError.name === "AbortError"
+          ) {
+            setSyncMessage("已取消分享。");
+            return;
+          }
+        }
+      }
+
+      {
+        const url = URL.createObjectURL(file);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = file.name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setSyncMessage("同步包已下载，可以通过 AirDrop 发送到另一台设备。");
+      }
+    } catch (shareError) {
+      if (shareError instanceof DOMException && shareError.name === "AbortError") {
+        setSyncMessage("已取消分享。");
+      } else {
+        setSyncMessage("同步包没有导出成功，请重试。");
+      }
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function importSyncPackage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setSyncBusy(true);
+    setSyncMessage("");
+    try {
+      const incoming = parseArchive(JSON.parse(await file.text()));
+      const merged = mergeArchives(await createLocalArchive(), incoming);
+      await applyLocalArchive(merged);
+      setSyncMessage(`导入完成：当前设备共有 ${merged.entries.length} 条记录。`);
+    } catch (importError) {
+      setSyncMessage(
+        importError instanceof Error ? importError.message : "同步包导入失败。",
+      );
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
   useEffect(() => {
     void loadEntries();
   }, []);
@@ -1577,6 +1861,35 @@ export function MediaJournal() {
     const localSession = new EventSource("/__pma/session");
     return () => localSession.close();
   }, []);
+
+  useEffect(() => {
+    if (!lanStatus?.isHost) return;
+    let checking = false;
+    const interval = window.setInterval(async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const status = await fetchLanStatus();
+        setLanStatus(status);
+        if (status.revision > lastLanRevision.current) {
+          const response = await fetch("/__pma/sync/pull", { cache: "no-store" });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "同步数据读取失败。");
+          const archive = parseArchive(result.archive);
+          await applyLocalArchive(archive);
+          lastLanRevision.current = Number(result.revision) || status.revision;
+          setSyncMessage(
+            `已收到手机的新数据，电脑主数据库现在有 ${archive.entries.length} 条记录。`,
+          );
+        }
+      } catch {
+        // 下一轮继续检查，避免短暂断网打断本地使用。
+      } finally {
+        checking = false;
+      }
+    }, 2500);
+    return () => window.clearInterval(interval);
+  }, [lanStatus?.isHost]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("liuhen-theme");
@@ -2085,7 +2398,7 @@ export function MediaJournal() {
       const notes: Note[] = editing ? [...editing.notes] : [];
       if (!editing) {
         notes.unshift({
-          id: crypto.randomUUID(),
+          id: createLocalId(),
           content: thought,
           quoteText: form.thoughtQuote.trim(),
           quoteMinute: numberFromForm(form.thoughtMinute),
@@ -2101,7 +2414,7 @@ export function MediaJournal() {
         });
       }
       const entry: Entry = {
-        id: editing?.id ?? crypto.randomUUID(),
+        id: editing?.id ?? createLocalId(),
         title: form.title.trim(),
         originalTitle: form.originalTitle.trim(),
         creator: form.creator.trim(),
@@ -2195,7 +2508,7 @@ export function MediaJournal() {
         volume,
       );
       const note: Note = {
-        id: crypto.randomUUID(),
+        id: createLocalId(),
         content: recordForm.thought.trim(),
         quoteText: recordForm.quoteText.trim(),
         quoteMinute: numberFromForm(recordForm.quoteMinute),
@@ -2393,8 +2706,18 @@ export function MediaJournal() {
         </nav>
 
         <div className="sidebar-note local-mode-note">
-          <span>本地模式</span>
-          <p>记录仅保存在当前设备，暂未开启云同步。</p>
+          <div>
+            <span>本地数据</span>
+            <button
+              aria-label="打开数据同步"
+              onClick={() => void openSyncCenter()}
+              title="同步与数据包"
+              type="button"
+            >
+              🔄
+            </button>
+          </div>
+          <p>可通过同一 Wi‑Fi 或 AirDrop 在设备间同步。</p>
         </div>
       </aside>
 
@@ -2580,6 +2903,193 @@ export function MediaJournal() {
       >
         ＋
       </button>
+
+      {syncOpen && (
+        <div className="modal-backdrop sync-backdrop" role="presentation">
+          <div
+            aria-label="数据同步"
+            aria-modal="true"
+            className="sync-modal"
+            role="dialog"
+          >
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">LOCAL SYNC</span>
+                <h2>数据同步</h2>
+                <p>电脑作为主数据库，合并后两台设备都会获得最新版。</p>
+              </div>
+              <button
+                aria-label="关闭数据同步"
+                className="close-button"
+                onClick={() => setSyncOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="sync-mode-tabs" aria-label="同步方式">
+              <button
+                className={syncMode === "lan" ? "active" : ""}
+                onClick={() => setSyncMode("lan")}
+                type="button"
+              >
+                <span>⌁</span>
+                <div>
+                  <strong>同一 Wi‑Fi</strong>
+                  <small>手机与电脑直接合并</small>
+                </div>
+              </button>
+              <button
+                className={syncMode === "airdrop" ? "active" : ""}
+                onClick={() => setSyncMode("airdrop")}
+                type="button"
+              >
+                <span>↗</span>
+                <div>
+                  <strong>AirDrop 数据包</strong>
+                  <small>导出或导入完整记录</small>
+                </div>
+              </button>
+            </div>
+
+            {syncMode === "lan" ? (
+              <section className="sync-panel">
+                {lanStatus?.isHost ? (
+                  <>
+                    <div className="sync-host-status">
+                      <span className="sync-ready-dot" />
+                      <div>
+                        <strong>电脑主数据库已开启</strong>
+                        <small>保持本地应用和这个页面开启，等待手机连接。</small>
+                      </div>
+                    </div>
+                    <div className="sync-address-card">
+                      <span>手机访问地址</span>
+                      {lanStatus.urls.map((url, index) => (
+                        <code key={url}>
+                          {url}
+                          {index === 0 && <small>推荐</small>}
+                        </code>
+                      ))}
+                      <p>优先使用带 .local 的地址；打不开时再尝试数字 IP 地址。</p>
+                    </div>
+                    <div className="pairing-code-card">
+                      <div>
+                        <span>本次配对码</span>
+                        <strong>{lanStatus.pairingCode}</strong>
+                      </div>
+                      <small>每次重新启动电脑端都会更换。</small>
+                    </div>
+                    <button
+                      className="secondary-button sync-wide-button"
+                      disabled={syncBusy}
+                      onClick={() => void syncFromLan()}
+                      type="button"
+                    >
+                      {syncBusy ? "正在准备…" : "更新电脑同步副本"}
+                    </button>
+                  </>
+                ) : lanStatus ? (
+                  <>
+                    <div className="sync-host-status">
+                      <span className="sync-ready-dot" />
+                      <div>
+                        <strong>已找到电脑端</strong>
+                        <small>输入电脑屏幕上的配对码，再同步手机中的新记录。</small>
+                      </div>
+                    </div>
+                    <label className="pairing-input-field">
+                      <span>六位配对码</span>
+                      <input
+                        autoComplete="one-time-code"
+                        inputMode="numeric"
+                        maxLength={6}
+                        onChange={(event) =>
+                          setLanPairingCode(event.target.value.replace(/\D/g, ""))
+                        }
+                        placeholder="000000"
+                        value={lanPairingCode}
+                      />
+                    </label>
+                    <button
+                      className="primary-button sync-wide-button"
+                      disabled={syncBusy}
+                      onClick={() => void syncFromLan()}
+                      type="button"
+                    >
+                      {syncBusy ? "正在合并…" : "同步到电脑并取回最新版"}
+                    </button>
+                  </>
+                ) : (
+                  <div className="sync-unavailable">
+                    <strong>这里没有检测到电脑端同步服务</strong>
+                    <p>
+                      请先在电脑上打开本地 App，再让手机使用电脑同步窗口显示的地址访问。
+                    </p>
+                  </div>
+                )}
+                <div className="sync-steps">
+                  <span>1&nbsp; 手机上传新数据</span>
+                  <i>→</i>
+                  <span>2&nbsp; 电脑合并主库</span>
+                  <i>→</i>
+                  <span>3&nbsp; 手机取回最新版</span>
+                </div>
+              </section>
+            ) : (
+              <section className="sync-panel airdrop-panel">
+                <div className="airdrop-option">
+                  <span aria-hidden="true">↗</span>
+                  <div>
+                    <strong>导出同步包</strong>
+                    <p>生成包含条目、感想、图片和设置的文件，再选择 AirDrop。</p>
+                  </div>
+                  <button
+                    className="secondary-button"
+                    disabled={syncBusy}
+                    onClick={() => void exportSyncPackage()}
+                    type="button"
+                  >
+                    导出 / AirDrop
+                  </button>
+                </div>
+                <div className="airdrop-option">
+                  <span aria-hidden="true">↓</span>
+                  <div>
+                    <strong>导入同步包</strong>
+                    <p>选择另一台设备传来的 .pma 文件，自动与本机数据合并。</p>
+                  </div>
+                  <button
+                    className="secondary-button"
+                    disabled={syncBusy}
+                    onClick={() => syncFileInput.current?.click()}
+                    type="button"
+                  >
+                    选择文件
+                  </button>
+                  <input
+                    accept=".pma,.json,application/json"
+                    hidden
+                    onChange={(event) => void importSyncPackage(event)}
+                    ref={syncFileInput}
+                    type="file"
+                  />
+                </div>
+                <p className="airdrop-note">
+                  导入采用合并方式，不会直接清空本机数据；删除记录也会随同步包传递。
+                </p>
+              </section>
+            )}
+
+            {syncMessage && (
+              <div className="sync-message" role="status">
+                {syncMessage}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {settingsOpen && (
         <div className="modal-backdrop settings-backdrop" role="presentation">
