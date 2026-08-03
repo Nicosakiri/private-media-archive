@@ -1,9 +1,11 @@
 import type { Entry } from "./media-types";
 import { calculateProgress, deriveStatus } from "./media-types";
+import type { DeletedEntry } from "./sync-model";
 
 const DATABASE_NAME = "liuhen-local-journal";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const ENTRY_STORE = "entries";
+const DELETION_STORE = "deleted_entries";
 
 function openDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -13,6 +15,9 @@ function openDatabase() {
       const database = request.result;
       if (!database.objectStoreNames.contains(ENTRY_STORE)) {
         database.createObjectStore(ENTRY_STORE, { keyPath: "id" });
+      }
+      if (!database.objectStoreNames.contains(DELETION_STORE)) {
+        database.createObjectStore(DELETION_STORE, { keyPath: "id" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -129,9 +134,93 @@ export async function listLocalEntries() {
 }
 
 export function saveLocalEntry(entry: Entry) {
-  return runRequest<IDBValidKey>("readwrite", (store) => store.put(entry));
+  return openDatabase().then(
+    (database) =>
+      new Promise<IDBValidKey>((resolve, reject) => {
+        const transaction = database.transaction(
+          [ENTRY_STORE, DELETION_STORE],
+          "readwrite",
+        );
+        const request = transaction.objectStore(ENTRY_STORE).put(entry);
+        transaction.objectStore(DELETION_STORE).delete(entry.id);
+        request.onsuccess = () => resolve(request.result);
+        transaction.oncomplete = () => database.close();
+        transaction.onerror = () => {
+          database.close();
+          reject(transaction.error ?? new Error("本地数据库操作失败"));
+        };
+      }),
+  );
 }
 
 export function removeLocalEntry(id: string) {
-  return runRequest<undefined>("readwrite", (store) => store.delete(id));
+  return openDatabase().then(
+    (database) =>
+      new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(
+          [ENTRY_STORE, DELETION_STORE],
+          "readwrite",
+        );
+        transaction.objectStore(ENTRY_STORE).delete(id);
+        transaction.objectStore(DELETION_STORE).put({
+          id,
+          deletedAt: new Date().toISOString(),
+        } satisfies DeletedEntry);
+        transaction.oncomplete = () => {
+          database.close();
+          resolve();
+        };
+        transaction.onerror = () => {
+          database.close();
+          reject(transaction.error ?? new Error("本地数据库操作失败"));
+        };
+      }),
+  );
+}
+
+export function listLocalDeletedEntries() {
+  return openDatabase().then(
+    (database) =>
+      new Promise<DeletedEntry[]>((resolve, reject) => {
+        const transaction = database.transaction(DELETION_STORE, "readonly");
+        const request = transaction.objectStore(DELETION_STORE).getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () =>
+          reject(request.error ?? new Error("删除记录没有读取成功"));
+        transaction.oncomplete = () => database.close();
+        transaction.onerror = () => {
+          database.close();
+          reject(transaction.error ?? new Error("删除记录没有读取成功"));
+        };
+      }),
+  );
+}
+
+export function replaceLocalArchive(
+  entries: Entry[],
+  deletedEntries: DeletedEntry[],
+) {
+  return openDatabase().then(
+    (database) =>
+      new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(
+          [ENTRY_STORE, DELETION_STORE],
+          "readwrite",
+        );
+        const entryStore = transaction.objectStore(ENTRY_STORE);
+        const deletionStore = transaction.objectStore(DELETION_STORE);
+        entryStore.clear();
+        deletionStore.clear();
+        for (const entry of entries) entryStore.put(entry);
+        for (const deletion of deletedEntries) deletionStore.put(deletion);
+        transaction.oncomplete = () => {
+          database.close();
+          resolve();
+        };
+        transaction.onerror = () => {
+          database.close();
+          reject(transaction.error ?? new Error("同步数据没有保存成功"));
+        };
+      }),
+  );
 }
