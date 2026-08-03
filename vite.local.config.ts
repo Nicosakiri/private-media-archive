@@ -2,6 +2,7 @@ import vinext from "vinext";
 import { defineConfig } from "vite";
 import type { Plugin, ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
+import { localSyncServer } from "./build/local-sync-server";
 
 const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 
@@ -51,7 +52,17 @@ function localAppLifecycle(): Plugin {
 // needed for this app's browser-local archive and Douban route handlers.
 export default defineConfig({
   root: projectRoot,
-  plugins: [localAppLifecycle(), vinext({ appDir: projectRoot })],
+  plugins: [
+    localSyncServer(),
+    localAppLifecycle(),
+    vinext({ appDir: projectRoot }),
+  ],
+  server: {
+    allowedHosts: true,
+    host: "0.0.0.0",
+    port: 4317,
+    strictPort: true,
+  },
   resolve: {
     alias: {
       "cloudflare:workers": fileURLToPath(
