@@ -6,6 +6,7 @@ SITE_DIR="${0:A:h}"
 LOCAL_PORT="4317"
 LOCAL_URL="http://127.0.0.1:${LOCAL_PORT}"
 BUNDLED_NODE="/Users/hy151327/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+BUNDLED_PNPM="/Users/hy151327/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm"
 VITE_ENTRY="$SITE_DIR/node_modules/vite/bin/vite.js"
 LOCAL_CONFIG="$SITE_DIR/vite.local.config.ts"
 SAFE_WORK_DIR="${TMPDIR:-/private/tmp}"
@@ -27,10 +28,21 @@ else
 fi
 
 if [[ ! -f "$VITE_ENTRY" ]]; then
-  echo "网站依赖尚未安装，无法启动。"
-  echo "按任意键关闭窗口。"
-  read -k 1
-  exit 1
+  echo "正在准备本地网站所需文件（只会在缺少依赖时执行）……"
+  if [[ -x "$BUNDLED_PNPM" ]]; then
+    (cd "$SITE_DIR" && CI=true "$BUNDLED_PNPM" install --frozen-lockfile)
+  elif command -v pnpm >/dev/null 2>&1; then
+    (cd "$SITE_DIR" && CI=true pnpm install --frozen-lockfile)
+  else
+    echo "没有找到 pnpm，无法准备本地网站依赖。"
+  fi
+
+  if [[ ! -f "$VITE_ENTRY" ]]; then
+    echo "网站依赖没有安装成功，请确认电脑已联网后再试。"
+    echo "按任意键关闭窗口。"
+    read -k 1
+    exit 1
+  fi
 fi
 
 if curl --silent --fail "$LOCAL_URL" >/dev/null 2>&1; then
