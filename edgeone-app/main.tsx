@@ -14,3 +14,12 @@ createRoot(root).render(
     <MediaJournal />
   </StrictMode>,
 );
+
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => {
+    const workerUrl = new URL("sw.js", document.baseURI);
+    void navigator.serviceWorker.register(workerUrl.pathname, {
+      scope: new URL("./", document.baseURI).pathname,
+    });
+  });
+}
