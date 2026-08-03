@@ -4,7 +4,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   root: resolve(import.meta.dirname, "edgeone-app"),
-  publicDir: resolve(import.meta.dirname, "edgeone-app/public"),
+  publicDir: resolve(import.meta.dirname, "public"),
   plugins: [react()],
   build: {
     outDir: resolve(import.meta.dirname, "edgeone-deploy/site"),
