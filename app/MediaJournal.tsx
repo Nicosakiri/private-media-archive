@@ -3069,7 +3069,7 @@ export function MediaJournal() {
                     选择文件
                   </button>
                   <input
-                    accept=".pma,.json,application/json"
+                    aria-label="选择 PMA 同步包"
                     hidden
                     onChange={(event) => void importSyncPackage(event)}
                     ref={syncFileInput}
