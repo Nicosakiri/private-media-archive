@@ -2,6 +2,7 @@
 
 import {
   ChangeEvent,
+  ClipboardEvent,
   FormEvent,
   useEffect,
   useMemo,
@@ -23,6 +24,7 @@ import {
   seriesCategoryMeta,
   statusMeta,
   typeMeta,
+  webFictionTypeMeta,
 } from "./media-types";
 import type {
   BookCategory,
@@ -32,7 +34,10 @@ import type {
   MediaType,
   MovieMode,
   Note,
+  NoteImage,
+  ProgressMode,
   SeriesCategory,
+  WebFictionType,
 } from "./media-types";
 
 type DoubanLookupResult = {
@@ -59,11 +64,43 @@ type DoubanLookupDetails = {
 
 type ViewingRecordForm = {
   currentUnits: string;
+  manualProgressPercent: string;
+  progressMode: ProgressMode;
+  volume: string;
   watchedAt: string;
   thought: string;
+  quoteText: string;
+  quoteMinute: string;
+  images: NoteImage[];
+  thoughtImages: NoteImage[];
   status: EntryStatus;
   rating: number;
+  danmeiTags: string;
 };
+
+type ThoughtEditForm = {
+  content: string;
+  quoteText: string;
+  quoteMinute: string;
+  images: NoteImage[];
+  thoughtImages: NoteImage[];
+};
+
+type HiddenWebFilter = "all" | Exclude<WebFictionType, "">;
+
+type LocalUserProfile = {
+  name: string;
+  avatar: string;
+};
+
+const defaultUserProfile: LocalUserProfile = {
+  name: "Nicosakiri",
+  avatar: "/nicosakiri-avatar.png",
+};
+
+const defaultHiddenWebFilters: HiddenWebFilter[] = ["all"];
+const HIDDEN_WEB_FILTERS_KEY = "pma-hidden-web-filters";
+const USER_PROFILE_KEY = "pma-local-user-profile";
 
 const today = () => {
   const date = new Date();
@@ -84,8 +121,13 @@ const emptyForm = (): EntryForm => ({
   movieMode: "",
   status: "in_progress",
   progressUnit: "page",
+  progressMode: "units",
   totalUnits: "",
   currentUnits: "",
+  manualProgressPercent: "",
+  volume: "",
+  webFictionType: "",
+  danmeiTags: "",
   platform: "",
   country: "",
   cast: "",
@@ -95,6 +137,8 @@ const emptyForm = (): EntryForm => ({
   lastSeenAt: today(),
   rating: 0,
   thought: "",
+  thoughtQuote: "",
+  thoughtMinute: "",
 });
 
 function formatDate(date: string) {
@@ -109,6 +153,19 @@ function formatDate(date: string) {
 function numberFromForm(value: string) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, number) : 0;
+}
+
+function oneDecimalFromForm(value: string) {
+  return Math.round(numberFromForm(value) * 10) / 10;
+}
+
+function entryMatchesHiddenFilter(
+  entry: Entry,
+  filters: HiddenWebFilter[],
+) {
+  if (entry.bookCategory !== "web_fiction") return false;
+  return filters.includes("all") ||
+    (entry.webFictionType !== "" && filters.includes(entry.webFictionType));
 }
 
 function doubanSearchNoun(mediaType: MediaType) {
@@ -130,19 +187,324 @@ function doubanFilledMessage(mediaType: MediaType) {
 function viewingRecordForm(entry: Entry): ViewingRecordForm {
   return {
     currentUnits: entry.currentUnits ? String(entry.currentUnits) : "",
+    manualProgressPercent:
+      entry.progressMode === "percent" ? String(entry.progressPercent) : "",
+    progressMode: entry.progressMode || "units",
+    volume: entry.volume ? String(entry.volume) : "",
     watchedAt: today(),
     thought: "",
+    quoteText: "",
+    quoteMinute: "",
+    images: [],
+    thoughtImages: [],
     status: entry.status === "abandoned" ? "in_progress" : entry.status,
     rating: entry.rating || 0,
+    danmeiTags: entry.danmeiTags.join("、"),
   };
+}
+
+function parseTags(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[、,，/／|｜]+/)
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    ),
+  );
 }
 
 function calendarProgressLabel(entry: Entry, note: Note) {
   if (entry.mediaType === "movie" && entry.movieMode === "cinema") {
     return "影院观看";
   }
+  if (entry.progressMode === "percent") {
+    return note.progressText || `${note.progressPercent}%`;
+  }
   if (!note.currentUnits) return note.progressText || "开始观看";
   return `${note.currentUnits}${progressUnitMeta[entry.progressUnit].unit}`;
+}
+
+function noteHasThought(note: Note) {
+  return Boolean(
+    note.content.trim() ||
+      note.quoteText.trim() ||
+      note.images.length ||
+      note.thoughtImages.length,
+  );
+}
+
+async function imageFileToAttachment(file: File): Promise<NoteImage> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("只能添加图片文件。");
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    throw new Error("单张图片请控制在 5MB 以内。");
+  }
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+  return {
+    id: crypto.randomUUID(),
+    name: file.name || "粘贴的图片",
+    dataUrl,
+  };
+}
+
+async function appendThoughtImages(
+  files: File[],
+  current: NoteImage[],
+  onChange: (images: NoteImage[]) => void,
+  onError: (message: string) => void,
+) {
+  const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+  if (!imageFiles.length) return;
+  if (current.length + imageFiles.length > 6) {
+    onError("每条感想最多保存 6 张图片。");
+    return;
+  }
+  try {
+    const attachments = await Promise.all(
+      imageFiles.map((file) => imageFileToAttachment(file)),
+    );
+    onChange([...current, ...attachments]);
+    onError("");
+  } catch (error) {
+    onError(error instanceof Error ? error.message : "图片没有读取成功。");
+  }
+}
+
+function ThoughtComposer({
+  images,
+  mediaType,
+  onChange,
+  onError,
+  onImagesChange,
+  onQuoteChange,
+  onQuoteMinuteChange,
+  onThoughtImagesChange,
+  placeholder,
+  quoteMinute,
+  quoteText,
+  rows = 5,
+  thoughtImages,
+  value,
+}: {
+  images: NoteImage[];
+  mediaType: MediaType;
+  onChange: (value: string) => void;
+  onError: (message: string) => void;
+  onImagesChange: (images: NoteImage[]) => void;
+  onQuoteChange: (value: string) => void;
+  onQuoteMinuteChange: (value: string) => void;
+  onThoughtImagesChange: (images: NoteImage[]) => void;
+  placeholder: string;
+  quoteMinute: string;
+  quoteText: string;
+  rows?: number;
+  thoughtImages: NoteImage[];
+  value: string;
+}) {
+  function pastedImageFiles(event: ClipboardEvent<HTMLElement>) {
+    return Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+  }
+
+  function handleReferencePaste(event: ClipboardEvent<HTMLElement>) {
+    const files = pastedImageFiles(event);
+    if (!files.length) return;
+    event.preventDefault();
+    void appendThoughtImages(files, images, onImagesChange, onError);
+  }
+
+  function handleThoughtPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = pastedImageFiles(event);
+    if (!files.length) return;
+    event.preventDefault();
+    void appendThoughtImages(
+      files,
+      thoughtImages,
+      onThoughtImagesChange,
+      onError,
+    );
+  }
+
+  return (
+    <div className="thought-composer">
+      <div
+        aria-label={`${mediaType === "book" ? "原文" : "截图"}区域，可直接粘贴图片`}
+        className="thought-reference-box"
+        onPaste={handleReferencePaste}
+        tabIndex={mediaType === "book" ? -1 : 0}
+      >
+        <div className="thought-reference-heading">
+          <strong>{mediaType === "book" ? "原文" : "截图"}</strong>
+          <small>可选</small>
+        </div>
+        {mediaType === "book" ? (
+          <textarea
+            className="quote-textarea"
+            onChange={(event) => onQuoteChange(event.target.value)}
+            placeholder="粘贴原文，也可以直接粘贴原文截图"
+            rows={3}
+            value={quoteText}
+          />
+        ) : (
+          <label className="screenshot-minute-field">
+            <span>对应分钟数</span>
+            <input
+              inputMode="numeric"
+              min="0"
+              onChange={(event) => onQuoteMinuteChange(event.target.value)}
+              placeholder="例如：42"
+              step="1"
+              type="number"
+              value={quoteMinute}
+            />
+          </label>
+        )}
+        {images.length > 0 && (
+          <div className="thought-image-drafts">
+            {images.map((image) => (
+              <figure key={image.id}>
+                <img alt={image.name} src={image.dataUrl} />
+                <button
+                  aria-label={`移除 ${image.name}`}
+                  onClick={() =>
+                    onImagesChange(images.filter((item) => item.id !== image.id))
+                  }
+                  type="button"
+                >
+                  ×
+                </button>
+              </figure>
+            ))}
+          </div>
+        )}
+        <div className="thought-composer-footer">
+          <label title={mediaType === "book" ? "添加原文截图" : "添加截图"}>
+            <span aria-hidden="true">＋</span>
+            <input
+              accept="image/*"
+              multiple
+              onChange={(event) => {
+                const files = Array.from(event.target.files || []);
+                event.target.value = "";
+                void appendThoughtImages(files, images, onImagesChange, onError);
+              }}
+              type="file"
+            />
+          </label>
+          <small>也可在上方直接粘贴{mediaType === "book" ? "原文截图" : "截图"}</small>
+        </div>
+      </div>
+      <label className="thought-text-field">
+        <span>感想</span>
+        <textarea
+          onChange={(event) => onChange(event.target.value)}
+          onPaste={handleThoughtPaste}
+          placeholder={placeholder}
+          rows={rows}
+          value={value}
+        />
+      </label>
+      {thoughtImages.length > 0 && (
+        <div className="thought-image-drafts thought-comment-image-drafts">
+          {thoughtImages.map((image) => (
+            <figure key={image.id}>
+              <img alt={image.name} src={image.dataUrl} />
+              <button
+                aria-label={`移除 ${image.name}`}
+                onClick={() =>
+                  onThoughtImagesChange(
+                    thoughtImages.filter((item) => item.id !== image.id),
+                  )
+                }
+                type="button"
+              >
+                ×
+              </button>
+            </figure>
+          ))}
+        </div>
+      )}
+      <small className="thought-paste-hint">可直接在感想框中粘贴感想图片</small>
+    </div>
+  );
+}
+
+function ThoughtBody({
+  mediaType,
+  note,
+  onImageOpen,
+  preview = false,
+}: {
+  mediaType: MediaType;
+  note: Note;
+  onImageOpen?: (image: NoteImage) => void;
+  preview?: boolean;
+}) {
+  const hasReference = Boolean(note.quoteText.trim() || note.images.length);
+  return (
+    <div className={preview ? "thought-body preview" : "thought-body"}>
+      {hasReference && (
+        <blockquote className="thought-reference">
+          <header>
+            <span>{mediaType === "book" ? "原文" : "截图"}</span>
+            {mediaType !== "book" && note.quoteMinute > 0 && (
+              <small>{note.quoteMinute} 分钟</small>
+            )}
+          </header>
+          {note.quoteText && <p>{note.quoteText}</p>}
+          {note.images.length > 0 && (
+            <div className="thought-images">
+              {note.images.map((image) => (
+                onImageOpen ? (
+                  <button
+                    aria-label={`放大查看 ${image.name}`}
+                    className="thought-image-button"
+                    key={image.id}
+                    onClick={() => onImageOpen(image)}
+                    type="button"
+                  >
+                    <img alt={image.name} src={image.dataUrl} />
+                  </button>
+                ) : (
+                  <img alt={image.name} key={image.id} src={image.dataUrl} />
+                )
+              ))}
+            </div>
+          )}
+        </blockquote>
+      )}
+      {note.content && <p className="thought-copy">{note.content}</p>}
+      {note.thoughtImages.length > 0 && (
+        <div className="thought-images thought-comment-images">
+          {note.thoughtImages.map((image) =>
+            onImageOpen ? (
+              <button
+                aria-label={`放大查看 ${image.name}`}
+                className="thought-image-button"
+                key={image.id}
+                onClick={() => onImageOpen(image)}
+                type="button"
+              >
+                <img alt={image.name} src={image.dataUrl} />
+              </button>
+            ) : (
+              <img alt={image.name} key={image.id} src={image.dataUrl} />
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function progressTimelineNotes(notes: Note[]) {
@@ -151,6 +513,8 @@ function progressTimelineNotes(notes: Note[]) {
     if (!previousProgress) return true;
     return (
       note.currentUnits !== previousProgress.currentUnits ||
+      note.progressPercent !== previousProgress.progressPercent ||
+      note.volume !== previousProgress.volume ||
       note.status !== previousProgress.status
     );
   });
@@ -251,6 +615,212 @@ function ProgressBar({
   );
 }
 
+const countryAliases: Record<string, string> = {
+  中国大陆: "中国",
+  中国香港: "中国",
+  中国台湾: "中国",
+  香港: "中国",
+  台湾: "中国",
+  美国: "美国",
+  美利坚合众国: "美国",
+  英国: "英国",
+  英格兰: "英国",
+  俄罗斯: "俄罗斯",
+  俄国: "俄罗斯",
+  韩国: "韩国",
+  南韩: "韩国",
+  日本: "日本",
+  法国: "法国",
+  德国: "德国",
+  意大利: "意大利",
+  西班牙: "西班牙",
+  加拿大: "加拿大",
+  墨西哥: "墨西哥",
+  巴西: "巴西",
+  阿根廷: "阿根廷",
+  印度: "印度",
+  埃及: "埃及",
+  南非: "南非",
+  澳大利亚: "澳大利亚",
+  澳洲: "澳大利亚",
+  新西兰: "新西兰",
+  朝鲜: "朝鲜",
+  北韩: "朝鲜",
+  越南: "越南",
+  泰国: "泰国",
+  新加坡: "新加坡",
+  马来西亚: "马来西亚",
+  印尼: "印度尼西亚",
+  印度尼西亚: "印度尼西亚",
+  荷兰: "荷兰",
+  比利时: "比利时",
+  瑞典: "瑞典",
+  挪威: "挪威",
+  丹麦: "丹麦",
+  芬兰: "芬兰",
+  葡萄牙: "葡萄牙",
+  波兰: "波兰",
+  奥地利: "奥地利",
+  瑞士: "瑞士",
+};
+
+function normalizeCountryName(value: string) {
+  return countryAliases[value.trim()] || value.trim();
+}
+
+function countryKeys(value: string) {
+  return value
+    .split(/[\/／、,，&和·]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map(normalizeCountryName);
+}
+
+type WorldFeature = {
+  type: "Feature";
+  properties: {
+    name: string;
+    nameEn: string;
+    isoA2: string;
+    isoA3: string;
+  };
+  geometry: {
+    type: "Polygon" | "MultiPolygon";
+    coordinates: number[][][] | number[][][][];
+  };
+};
+
+type WorldGeoJson = {
+  type: "FeatureCollection";
+  features: WorldFeature[];
+};
+
+function projectedPoint([longitude, latitude]: number[]) {
+  const x = ((longitude + 180) / 360) * 1000;
+  const y = ((84 - latitude) / 144) * 500;
+  return [x, y];
+}
+
+function polygonPath(polygon: number[][][]) {
+  return polygon
+    .map((ring) =>
+      `${ring
+        .map((point, index) => {
+          const [x, y] = projectedPoint(point);
+          return `${index ? "L" : "M"}${x.toFixed(2)},${y.toFixed(2)}`;
+        })
+        .join(" ")} Z`,
+    )
+    .join(" ");
+}
+
+function featurePath(feature: WorldFeature) {
+  return feature.geometry.type === "Polygon"
+    ? polygonPath(feature.geometry.coordinates as number[][][])
+    : (feature.geometry.coordinates as number[][][][])
+        .map(polygonPath)
+        .join(" ");
+}
+
+function mapFill(count: number, maxCount: number) {
+  if (!count) return "var(--map-empty)";
+  const strength = 0.24 + (count / maxCount) * 0.76;
+  const start = [183, 176, 218];
+  const end = [91, 72, 183];
+  const rgb = start.map((channel, index) =>
+    Math.round(channel + (end[index] - channel) * strength),
+  );
+  return `rgb(${rgb.join(",")})`;
+}
+
+function WorldHeatMap({ counts }: { counts: Record<string, number> }) {
+  const [features, setFeatures] = useState<WorldFeature[]>([]);
+  const [mapError, setMapError] = useState(false);
+  const [hovered, setHovered] = useState<{ name: string; count: number } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let active = true;
+    fetch("/world-countries.geojson")
+      .then((response) => {
+        if (!response.ok) throw new Error("World map unavailable");
+        return response.json() as Promise<WorldGeoJson>;
+      })
+      .then((data) => {
+        if (active) setFeatures(data.features);
+      })
+      .catch(() => {
+        if (active) setMapError(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const maxCount = Math.max(1, ...Object.values(counts));
+  const mappedKeys = new Set(
+    features.map((feature) => normalizeCountryName(feature.properties.name)),
+  );
+  const unmapped = Object.entries(counts)
+    .filter(([country]) => country !== "未记录" && !mappedKeys.has(country))
+    .sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div className="world-map-wrap">
+      <div className="world-heat-map">
+        {hovered && (
+          <div className="world-map-tooltip" role="status">
+            <strong>{hovered.name}</strong>
+            <span>{hovered.count} 部作品</span>
+          </div>
+        )}
+        {mapError ? (
+          <p className="world-map-error">世界地图没有载入成功。</p>
+        ) : (
+          <svg
+            aria-label="作品国家与地区世界地图；将鼠标移到国家上可查看作品数量"
+            className="world-map-svg"
+            role="img"
+            viewBox="0 0 1000 500"
+          >
+            {features.map((feature) => {
+              const country = normalizeCountryName(feature.properties.name);
+              const count = counts[country] || 0;
+              return (
+                <path
+                  aria-label={`${country}：${count} 部作品`}
+                  className={count ? "active" : ""}
+                  d={featurePath(feature)}
+                  fill={mapFill(count, maxCount)}
+                  key={`${feature.properties.isoA3}-${feature.properties.nameEn}`}
+                  onBlur={() => setHovered(null)}
+                  onFocus={() => setHovered({ name: country, count })}
+                  onMouseEnter={() => setHovered({ name: country, count })}
+                  onMouseLeave={() => setHovered(null)}
+                  tabIndex={0}
+                >
+                  <title>{country}：{count} 部作品</title>
+                </path>
+              );
+            })}
+          </svg>
+        )}
+      </div>
+      <div className="world-map-legend">
+        <span>少</span><i /><i /><i /><i /><span>多</span>
+      </div>
+      {unmapped.length > 0 && (
+        <div className="unmapped-countries">
+          {unmapped.map(([country, count]) => (
+            <span key={country}>{country} · {count}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RecordTable({
   entries,
   loading,
@@ -270,7 +840,7 @@ function RecordTable({
             <th><span className="property-icon">⑩</span>评分</th>
             <th><span className="property-icon">≡</span>作者 / 导演 / 主创</th>
             <th><span className="property-icon">◎</span>国家 / 地区</th>
-            <th><span className="property-icon">⌁</span>平台 / 版本</th>
+            <th><span className="property-icon">⌁</span>平台 / 版本 / 学科</th>
             <th><span className="property-icon">▬</span>进度</th>
             <th><span className="property-icon">⌖</span>当前位置</th>
             <th><span className="property-icon">□</span>最近更新</th>
@@ -362,10 +932,17 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
   type ChartDatum = { label: string; count: number; color?: string };
   type Chart = "primary" | "secondary" | "ratings";
   const [scope, setScope] = useState<"media" | "web">("media");
+  const [webArea, setWebArea] = useState<"danmei" | "other">("danmei");
   const [chart, setChart] = useState<Chart>("primary");
   const scopedEntries =
     scope === "web"
-      ? entries.filter((entry) => entry.bookCategory === "web_fiction")
+      ? entries.filter(
+          (entry) =>
+            entry.bookCategory === "web_fiction" &&
+            (webArea === "danmei"
+              ? entry.webFictionType === "danmei"
+              : entry.webFictionType !== "danmei"),
+        )
       : entries.filter((entry) => entry.bookCategory !== "web_fiction");
   const completed = scopedEntries.filter(
     (entry) => entry.status === "completed",
@@ -392,10 +969,24 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
       color: "#777772",
     },
     {
+      label: "教科书",
+      count: scopedEntries.filter(
+        (entry) => entry.bookCategory === "textbook",
+      ).length,
+      color: "#7b8799",
+    },
+    {
       label: "漫画",
       count: scopedEntries.filter((entry) => entry.bookCategory === "manga")
         .length,
       color: "#b0b0aa",
+    },
+    {
+      label: "轻小说",
+      count: scopedEntries.filter(
+        (entry) => entry.bookCategory === "light_novel",
+      ).length,
+      color: "#8f7aaa",
     },
     {
       label: "电影",
@@ -431,8 +1022,11 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
 
   const countryMap = scopedEntries.reduce<Record<string, number>>(
     (result, entry) => {
-      const country = entry.country.trim() || "未记录";
-      result[country] = (result[country] || 0) + 1;
+      const countries = countryKeys(entry.country);
+      if (!countries.length) result["未记录"] = (result["未记录"] || 0) + 1;
+      countries.forEach((country) => {
+        result[country] = (result[country] || 0) + 1;
+      });
       return result;
     },
     {},
@@ -464,6 +1058,19 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
     color,
     count: scopedEntries.filter((entry) => entry.status === status).length,
   }));
+  const danmeiTagMap = completed.reduce<Record<string, number>>(
+    (result, entry) => {
+      entry.danmeiTags.forEach((tag) => {
+        result[tag] = (result[tag] || 0) + 1;
+      });
+      return result;
+    },
+    {},
+  );
+  const danmeiTagCounts: ChartDatum[] = Object.entries(danmeiTagMap)
+    .map(([label, count]) => ({ label, count, color: "#7968c5" }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
   const ratingCounts: ChartDatum[] = Array.from({ length: 10 }, (_, index) => ({
     label: `${index + 1} 分`,
     count: rated.filter((entry) => entry.rating === index + 1).length,
@@ -474,7 +1081,9 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
       : scope === "web"
         ? chart === "primary"
           ? platformCounts
-          : statusCounts
+          : webArea === "danmei"
+            ? danmeiTagCounts
+            : statusCounts
         : chart === "primary"
           ? typeCounts
           : countryCounts;
@@ -484,7 +1093,9 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
       : scope === "web"
         ? chart === "primary"
           ? "阅读平台分布"
-          : "完成状态分布"
+          : webArea === "danmei"
+            ? "耽美题材标签"
+            : "完成状态分布"
         : chart === "primary"
           ? "类型分布"
           : "国家 / 地区分布";
@@ -492,15 +1103,20 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
   const favoriteType = [...typeCounts].sort((a, b) => b.count - a.count)[0];
   const topCountry = countryCounts.find((item) => item.label !== "未记录");
   const topPlatform = platformCounts.find((item) => item.label !== "未记录");
+  const topDanmeiTag = danmeiTagCounts[0];
   const topStatus = [...statusCounts].sort((a, b) => b.count - a.count)[0];
   const thoughtCount = scopedEntries.reduce(
-    (sum, entry) =>
-      sum + entry.notes.filter((note) => note.content.trim()).length,
+    (sum, entry) => sum + entry.notes.filter(noteHasThought).length,
     0,
   );
 
   function changeScope(nextScope: "media" | "web") {
     setScope(nextScope);
+    setChart("primary");
+  }
+
+  function changeWebArea(nextArea: "danmei" | "other") {
+    setWebArea(nextArea);
     setChart("primary");
   }
 
@@ -530,11 +1146,35 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
             网络小说统计
           </button>
         </div>
+        {scope === "web" && (
+          <div className="web-insight-tabs" aria-label="网络小说统计分区">
+            <button
+              className={webArea === "danmei" ? "active" : ""}
+              onClick={() => changeWebArea("danmei")}
+              type="button"
+            >
+              👬 耽美
+            </button>
+            <button
+              className={webArea === "other" ? "active" : ""}
+              onClick={() => changeWebArea("other")}
+              type="button"
+            >
+              其他网文
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="insight-summary">
         <div>
-          <span>{scope === "web" ? "网络小说" : "书影音记录"}</span>
+          <span>
+            {scope === "web"
+              ? webArea === "danmei"
+                ? "耽美小说"
+                : "其他网文"
+              : "书影音记录"}
+          </span>
           <strong>{scopedEntries.length}</strong>
           <small>部作品</small>
         </div>
@@ -578,7 +1218,11 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
               onClick={() => setChart("secondary")}
               type="button"
             >
-              {scope === "web" ? "完成状态" : "国家 / 地区"}
+              {scope === "web"
+                ? webArea === "danmei"
+                  ? "题材标签"
+                  : "完成状态"
+                : "国家 / 地区"}
             </button>
             <button
               className={chart === "ratings" ? "active" : ""}
@@ -590,7 +1234,9 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
           </div>
         </div>
 
-        {scopedEntries.length ? (
+        {scopedEntries.length && scope === "media" && chart === "secondary" ? (
+          <WorldHeatMap counts={countryMap} />
+        ) : scopedEntries.length ? (
           <div className={`bar-chart chart-${chart}`}>
             {activeData.map((item, index) => (
               <div className="bar-item" key={item.label}>
@@ -630,7 +1276,7 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
       <div className="insight-notes">
         <article>
           <span>
-            {scope === "web" ? "记录最多的阅读平台" : "最常看的类型"}
+            {scope === "web" ? "最常用的平台" : "最常看的类型"}
           </span>
           <strong>
             {scope === "web"
@@ -642,7 +1288,7 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
           <p>
             {scope === "web"
               ? topPlatform
-                ? `共 ${topPlatform.count} 部。`
+                ? `共 ${topPlatform.count} 部来自这个平台。`
                 : "填写阅读平台后自动汇总。"
               : favoriteType?.count
                 ? `共 ${favoriteType.count} 部，占当前记录最多。`
@@ -651,20 +1297,30 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
         </article>
         <article>
           <span>
-            {scope === "web" ? "最常见的阅读状态" : "记录最多的国家 / 地区"}
+            {scope === "web"
+              ? webArea === "danmei"
+                ? "最常见的耽美题材"
+                : "最常见的阅读状态"
+              : "记录最多的国家 / 地区"}
           </span>
           <strong>
             {scope === "web"
-              ? topStatus?.count
-                ? topStatus.label
-                : "暂无"
+              ? webArea === "danmei"
+                ? topDanmeiTag?.label || "暂无"
+                : topStatus?.count
+                  ? topStatus.label
+                  : "暂无"
               : topCountry?.label || "暂无"}
           </strong>
           <p>
             {scope === "web"
-              ? topStatus?.count
-                ? `共 ${topStatus.count} 部。`
-                : "添加网络小说后自动计算。"
+              ? webArea === "danmei"
+                ? topDanmeiTag
+                  ? `在已完成作品中出现 ${topDanmeiTag.count} 次。`
+                  : "小说完成时填写题材标签后自动统计。"
+                : topStatus?.count
+                  ? `共 ${topStatus.count} 部。`
+                  : "添加网络小说后自动计算。"
               : topCountry
                 ? `共 ${topCountry.count} 部。`
                 : "填写国家或地区后自动汇总。"}
@@ -850,7 +1506,7 @@ function CalendarPage({
 }
 
 export function MediaJournal() {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -867,15 +1523,38 @@ export function MediaJournal() {
     "progress",
   );
   const [form, setForm] = useState<EntryForm>(emptyForm);
+  const [formImages, setFormImages] = useState<NoteImage[]>([]);
+  const [formThoughtImages, setFormThoughtImages] = useState<NoteImage[]>([]);
   const [saving, setSaving] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
   const [recordForm, setRecordForm] = useState<ViewingRecordForm | null>(null);
+  const [entryDeleteConfirmOpen, setEntryDeleteConfirmOpen] = useState(false);
+  const [activeThoughtId, setActiveThoughtId] = useState<string | null>(null);
+  const [thoughtEditForm, setThoughtEditForm] = useState<ThoughtEditForm | null>(
+    null,
+  );
+  const [zoomedImage, setZoomedImage] = useState<NoteImage | null>(null);
+  const [thoughtsExpanded, setThoughtsExpanded] = useState(false);
   const [movieLookupQuery, setMovieLookupQuery] = useState("");
   const [movieLookupResults, setMovieLookupResults] = useState<
     DoubanLookupResult[]
   >([]);
   const [movieLookupMessage, setMovieLookupMessage] = useState("");
   const [movieLookupLoading, setMovieLookupLoading] = useState(false);
+  const [showHiddenEntries, setShowHiddenEntries] = useState(false);
+  const [hiddenWebFilters, setHiddenWebFilters] = useState<HiddenWebFilter[]>(
+    defaultHiddenWebFilters,
+  );
+  const [userProfile, setUserProfile] = useState<LocalUserProfile>(
+    defaultUserProfile,
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsHiddenDraft, setSettingsHiddenDraft] = useState<
+    HiddenWebFilter[]
+  >(defaultHiddenWebFilters);
+  const [settingsShowHiddenDraft, setSettingsShowHiddenDraft] = useState(false);
+  const [settingsProfileDraft, setSettingsProfileDraft] =
+    useState<LocalUserProfile>(defaultUserProfile);
 
   async function loadEntries() {
     try {
@@ -894,15 +1573,42 @@ export function MediaJournal() {
   }, []);
 
   useEffect(() => {
+    if (!["127.0.0.1", "localhost"].includes(window.location.hostname)) return;
+    const localSession = new EventSource("/__pma/session");
+    return () => localSession.close();
+  }, []);
+
+  useEffect(() => {
     const saved = window.localStorage.getItem("liuhen-theme");
     const preferred =
       saved === "light" || saved === "dark"
         ? saved
-        : window.matchMedia("(prefers-color-scheme: dark)").matches
-          ? "dark"
-          : "light";
+        : "dark";
     setTheme(preferred);
     document.documentElement.dataset.theme = preferred;
+
+    try {
+      const savedFilters = JSON.parse(
+        window.localStorage.getItem(HIDDEN_WEB_FILTERS_KEY) || "null",
+      ) as HiddenWebFilter[] | null;
+      if (Array.isArray(savedFilters)) setHiddenWebFilters(savedFilters);
+    } catch {
+      setHiddenWebFilters(defaultHiddenWebFilters);
+    }
+
+    try {
+      const savedProfile = JSON.parse(
+        window.localStorage.getItem(USER_PROFILE_KEY) || "null",
+      ) as Partial<LocalUserProfile> | null;
+      if (savedProfile?.name || savedProfile?.avatar) {
+        setUserProfile({
+          name: savedProfile.name?.trim() || defaultUserProfile.name,
+          avatar: savedProfile.avatar || defaultUserProfile.avatar,
+        });
+      }
+    } catch {
+      setUserProfile(defaultUserProfile);
+    }
   }, []);
 
   function toggleTheme() {
@@ -910,6 +1616,67 @@ export function MediaJournal() {
     setTheme(next);
     document.documentElement.dataset.theme = next;
     window.localStorage.setItem("liuhen-theme", next);
+  }
+
+  function openSettings() {
+    setSettingsHiddenDraft(hiddenWebFilters);
+    setSettingsShowHiddenDraft(showHiddenEntries);
+    setSettingsProfileDraft(userProfile);
+    setSettingsOpen(true);
+  }
+
+  function toggleHiddenFilter(filter: HiddenWebFilter) {
+    setSettingsHiddenDraft((current) => {
+      if (filter === "all") return current.includes("all") ? [] : ["all"];
+      const withoutAll = current.filter((item) => item !== "all");
+      return withoutAll.includes(filter)
+        ? withoutAll.filter((item) => item !== filter)
+        : [...withoutAll, filter];
+    });
+  }
+
+  function uploadUserAvatar(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("请选择图片文件作为头像。");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError("头像图片请控制在 2MB 以内。");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSettingsProfileDraft((current) => ({
+        ...current,
+        avatar:
+          typeof reader.result === "string"
+            ? reader.result
+            : defaultUserProfile.avatar,
+      }));
+      setError("");
+    };
+    reader.onerror = () => setError("头像没有读取成功，请换一张再试。");
+    reader.readAsDataURL(file);
+  }
+
+  function saveSettings(event: FormEvent) {
+    event.preventDefault();
+    const nextProfile = {
+      name: settingsProfileDraft.name.trim() || defaultUserProfile.name,
+      avatar: settingsProfileDraft.avatar || defaultUserProfile.avatar,
+    };
+    setHiddenWebFilters(settingsHiddenDraft);
+    setUserProfile(nextProfile);
+    setShowHiddenEntries(settingsShowHiddenDraft);
+    window.localStorage.setItem(
+      HIDDEN_WEB_FILTERS_KEY,
+      JSON.stringify(settingsHiddenDraft),
+    );
+    window.localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(nextProfile));
+    setSettingsOpen(false);
   }
 
   const filteredEntries = useMemo(() => {
@@ -928,21 +1695,55 @@ export function MediaJournal() {
         statusFilter === "all" || entry.status === statusFilter;
       const matchesType =
         typeFilter === "all" || entry.mediaType === typeFilter;
-      return matchesSearch && matchesStatus && matchesType;
+      const matchesHiddenPreference =
+        showHiddenEntries || !entryMatchesHiddenFilter(entry, hiddenWebFilters);
+      return (
+        matchesSearch &&
+        matchesStatus &&
+        matchesType &&
+        matchesHiddenPreference
+      );
     });
-  }, [entries, search, statusFilter, typeFilter]);
+  }, [
+    entries,
+    hiddenWebFilters,
+    search,
+    showHiddenEntries,
+    statusFilter,
+    typeFilter,
+  ]);
+
+  const settingsHiddenEntryCount = useMemo(
+    () =>
+      entries.filter((entry) =>
+        entryMatchesHiddenFilter(entry, settingsHiddenDraft),
+      ).length,
+    [entries, settingsHiddenDraft],
+  );
+
+  const summaryEntries = useMemo(
+    () =>
+      showHiddenEntries
+        ? entries
+        : entries.filter(
+            (entry) => !entryMatchesHiddenFilter(entry, hiddenWebFilters),
+          ),
+    [entries, hiddenWebFilters, showHiddenEntries],
+  );
 
   const stats = useMemo(
     () => ({
-      active: entries.filter((entry) => entry.status === "in_progress").length,
-      completed: entries.filter((entry) => entry.status === "completed").length,
-      notes: entries.reduce(
+      active: summaryEntries.filter((entry) => entry.status === "in_progress")
+        .length,
+      completed: summaryEntries.filter((entry) => entry.status === "completed")
+        .length,
+      notes: summaryEntries.reduce(
         (sum, entry) =>
-          sum + entry.notes.filter((note) => note.content.trim()).length,
+          sum + entry.notes.filter(noteHasThought).length,
         0,
       ),
     }),
-    [entries],
+    [summaryEntries],
   );
 
   const totalUnits = numberFromForm(form.totalUnits);
@@ -950,11 +1751,10 @@ export function MediaJournal() {
     totalUnits || Number.POSITIVE_INFINITY,
     numberFromForm(form.currentUnits),
   );
-  const computedProgress = calculateProgress(
-    form.movieMode,
-    totalUnits,
-    currentUnits,
-  );
+  const computedProgress =
+    form.mediaType === "book" && form.progressMode === "percent"
+      ? Math.min(100, oneDecimalFromForm(form.manualProgressPercent))
+      : calculateProgress(form.movieMode, totalUnits, currentUnits);
   const automaticStatus = deriveStatus(
     computedProgress,
     form.status === "abandoned",
@@ -970,19 +1770,25 @@ export function MediaJournal() {
       : 0;
   const recordProgress =
     selected && recordForm
-      ? calculateProgress(
-          selected.movieMode,
-          selected.totalUnits,
-          recordCurrentUnits,
-        )
+      ? selected.mediaType === "book" && recordForm.progressMode === "percent"
+        ? Math.min(100, oneDecimalFromForm(recordForm.manualProgressPercent))
+        : calculateProgress(
+            selected.movieMode,
+            selected.totalUnits,
+            recordCurrentUnits,
+          )
       : 0;
   const recordStatus =
     recordForm &&
     deriveStatus(recordProgress, recordForm.status === "abandoned");
+  const activeThought =
+    selected?.notes.find((note) => note.id === activeThoughtId) || null;
 
   function openCreate() {
     setEditing(null);
     setForm(emptyForm());
+    setFormImages([]);
+    setFormThoughtImages([]);
     setMovieLookupQuery("");
     setMovieLookupResults([]);
     setMovieLookupMessage("");
@@ -1028,6 +1834,10 @@ export function MediaJournal() {
   function openDetails(entry: Entry) {
     setSelected(entry);
     setDetailTab("progress");
+    setActiveThoughtId(null);
+    setThoughtEditForm(null);
+    setZoomedImage(null);
+    setThoughtsExpanded(false);
     void backfillEntryCover(entry);
   }
 
@@ -1044,8 +1854,14 @@ export function MediaJournal() {
       movieMode: entry.movieMode,
       status: entry.status,
       progressUnit: entry.progressUnit,
+      progressMode: entry.progressMode || "units",
       totalUnits: entry.totalUnits ? String(entry.totalUnits) : "",
       currentUnits: entry.currentUnits ? String(entry.currentUnits) : "",
+      manualProgressPercent:
+        entry.progressMode === "percent" ? String(entry.progressPercent) : "",
+      volume: entry.volume ? String(entry.volume) : "",
+      webFictionType: entry.webFictionType || "",
+      danmeiTags: entry.danmeiTags.join("、"),
       platform: entry.platform,
       country: entry.country,
       cast: entry.cast || "",
@@ -1055,7 +1871,11 @@ export function MediaJournal() {
       lastSeenAt: entry.lastSeenAt.slice(0, 10),
       rating: entry.rating || 0,
       thought: "",
+      thoughtQuote: "",
+      thoughtMinute: "",
     });
+    setFormImages([]);
+    setFormThoughtImages([]);
     setMovieLookupQuery("");
     setMovieLookupResults([]);
     setMovieLookupMessage("");
@@ -1070,10 +1890,17 @@ export function MediaJournal() {
       mediaType,
       movieMode,
       progressUnit: defaultProgressUnit(mediaType),
+      progressMode: "units",
       status: "in_progress",
       totalUnits: "",
       currentUnits: "",
+      manualProgressPercent: "",
+      volume: "",
+      webFictionType: "",
+      danmeiTags: "",
       rating: 0,
+      thoughtQuote: "",
+      thoughtMinute: "",
     });
     setMovieLookupResults([]);
     setMovieLookupMessage("");
@@ -1229,23 +2056,30 @@ export function MediaJournal() {
     setSaving(true);
     try {
       const now = new Date().toISOString();
-      const progressPercent = calculateProgress(
-        form.movieMode,
-        totalUnits,
-        currentUnits,
-      );
+      const progressPercent =
+        form.mediaType === "book" && form.progressMode === "percent"
+          ? Math.min(100, oneDecimalFromForm(form.manualProgressPercent))
+          : calculateProgress(form.movieMode, totalUnits, currentUnits);
       const status = deriveStatus(
         progressPercent,
         form.status === "abandoned",
       );
       const storedCurrentUnits =
-        progressPercent === 100 && totalUnits ? totalUnits : currentUnits;
+        form.progressMode === "percent"
+          ? 0
+          : progressPercent === 100 && totalUnits
+            ? totalUnits
+            : currentUnits;
+      const volume = numberFromForm(form.volume);
       const progressText = makeProgressText(
         form.mediaType,
         form.movieMode,
         form.progressUnit,
         totalUnits,
         storedCurrentUnits,
+        form.progressMode,
+        progressPercent,
+        volume,
       );
       const thought = form.thought.trim();
       const notes: Note[] = editing ? [...editing.notes] : [];
@@ -1253,9 +2087,14 @@ export function MediaJournal() {
         notes.unshift({
           id: crypto.randomUUID(),
           content: thought,
+          quoteText: form.thoughtQuote.trim(),
+          quoteMinute: numberFromForm(form.thoughtMinute),
+          images: formImages,
+          thoughtImages: formThoughtImages,
           progressText,
           currentUnits: storedCurrentUnits,
           progressPercent,
+          volume,
           status,
           watchedAt: form.lastSeenAt,
           createdAt: now,
@@ -1276,8 +2115,18 @@ export function MediaJournal() {
         progressText,
         progressPercent,
         progressUnit: form.progressUnit,
+        progressMode: form.mediaType === "book" ? form.progressMode : "units",
         totalUnits,
         currentUnits: storedCurrentUnits,
+        volume: form.mediaType === "book" ? volume : 0,
+        webFictionType:
+          form.bookCategory === "web_fiction" ? form.webFictionType : "",
+        danmeiTags:
+          status === "completed" &&
+          form.bookCategory === "web_fiction" &&
+          form.webFictionType === "danmei"
+            ? parseTags(form.danmeiTags)
+            : [],
         platform: form.platform.trim(),
         country: form.country.trim(),
         cast: form.cast.trim(),
@@ -1306,6 +2155,8 @@ export function MediaJournal() {
       );
       setEditorOpen(false);
       setEditing(null);
+      setFormImages([]);
+      setFormThoughtImages([]);
       setError("");
     } catch {
       setError("这次没有保存成功，请检查浏览器是否允许本地存储。");
@@ -1327,22 +2178,33 @@ export function MediaJournal() {
     try {
       const now = new Date().toISOString();
       const storedCurrentUnits =
-        recordProgress === 100 && selected.totalUnits
-          ? selected.totalUnits
-          : recordCurrentUnits;
+        recordForm.progressMode === "percent"
+          ? 0
+          : recordProgress === 100 && selected.totalUnits
+            ? selected.totalUnits
+            : recordCurrentUnits;
+      const volume = numberFromForm(recordForm.volume);
       const progressText = makeProgressText(
         selected.mediaType,
         selected.movieMode,
         selected.progressUnit,
         selected.totalUnits,
         storedCurrentUnits,
+        recordForm.progressMode,
+        recordProgress,
+        volume,
       );
       const note: Note = {
         id: crypto.randomUUID(),
         content: recordForm.thought.trim(),
+        quoteText: recordForm.quoteText.trim(),
+        quoteMinute: numberFromForm(recordForm.quoteMinute),
+        images: recordForm.images,
+        thoughtImages: recordForm.thoughtImages,
         progressText,
         currentUnits: storedCurrentUnits,
         progressPercent: recordProgress,
+        volume,
         status: recordStatus,
         watchedAt: recordForm.watchedAt,
         createdAt: now,
@@ -1352,7 +2214,9 @@ export function MediaJournal() {
         status: recordStatus,
         progressText,
         progressPercent: recordProgress,
+        progressMode: recordForm.progressMode,
         currentUnits: storedCurrentUnits,
+        volume,
         lastSeenAt: recordForm.watchedAt,
         completedAt:
           recordStatus === "completed"
@@ -1366,6 +2230,12 @@ export function MediaJournal() {
             : recordStatus === "completed"
               ? selected.rating
               : null,
+        danmeiTags:
+          recordStatus === "completed" &&
+          selected.bookCategory === "web_fiction" &&
+          selected.webFictionType === "danmei"
+            ? parseTags(recordForm.danmeiTags)
+            : selected.danmeiTags,
         updatedAt: now,
         notes: [note, ...selected.notes],
       };
@@ -1394,10 +2264,92 @@ export function MediaJournal() {
       setEntries((current) =>
         current.filter((entry) => entry.id !== selected.id),
       );
+      setEntryDeleteConfirmOpen(false);
       setSelected(null);
       setError("");
     } catch {
       setError("删除失败，请稍后重试。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteThought(noteId: string) {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const updated: Entry = {
+        ...selected,
+        updatedAt: now,
+        notes: selected.notes.map((note) =>
+          note.id === noteId
+            ? {
+                ...note,
+                content: "",
+                quoteText: "",
+                quoteMinute: 0,
+                images: [],
+                thoughtImages: [],
+              }
+            : note,
+        ),
+      };
+      await saveLocalEntry(updated);
+      setEntries((current) =>
+        current.map((entry) => (entry.id === updated.id ? updated : entry)),
+      );
+      setSelected(updated);
+      setActiveThoughtId(null);
+      setThoughtEditForm(null);
+      setError("");
+    } catch {
+      setError("这条感想没有删除成功，请稍后重试。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function startEditingThought(note: Note) {
+    setThoughtEditForm({
+      content: note.content,
+      quoteText: note.quoteText,
+      quoteMinute: note.quoteMinute ? String(note.quoteMinute) : "",
+      images: note.images,
+      thoughtImages: note.thoughtImages,
+    });
+  }
+
+  async function saveThoughtEdit(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || !activeThought || !thoughtEditForm) return;
+    setSaving(true);
+    try {
+      const updated: Entry = {
+        ...selected,
+        updatedAt: new Date().toISOString(),
+        notes: selected.notes.map((note) =>
+          note.id === activeThought.id
+            ? {
+                ...note,
+                content: thoughtEditForm.content.trim(),
+                quoteText: thoughtEditForm.quoteText.trim(),
+                quoteMinute: numberFromForm(thoughtEditForm.quoteMinute),
+                images: thoughtEditForm.images,
+                thoughtImages: thoughtEditForm.thoughtImages,
+              }
+            : note,
+        ),
+      };
+      await saveLocalEntry(updated);
+      setEntries((current) =>
+        current.map((entry) => (entry.id === updated.id ? updated : entry)),
+      );
+      setSelected(updated);
+      setThoughtEditForm(null);
+      setError("");
+    } catch {
+      setError("这条感想没有保存成功，请稍后重试。");
     } finally {
       setSaving(false);
     }
@@ -1467,7 +2419,6 @@ export function MediaJournal() {
             </span>
           )}
           <div className="topbar-actions">
-            <span className="local-badge">本地</span>
             <button
               aria-label={theme === "light" ? "切换到深色模式" : "切换到浅色模式"}
               className="theme-toggle"
@@ -1475,11 +2426,22 @@ export function MediaJournal() {
               title={theme === "light" ? "深色模式" : "浅色模式"}
               type="button"
             >
-              <span>{theme === "light" ? "◐" : "◑"}</span>
-              {theme === "light" ? "深色" : "浅色"}
+              <span aria-hidden="true">{theme === "light" ? "🌙" : "☀️"}</span>
+            </button>
+            <button className="toolbar-button" onClick={openSettings} type="button">
+              设置
             </button>
             <button className="primary-button" onClick={openCreate} type="button">
               <span>＋</span> 新增观看
+            </button>
+            <button
+              aria-label={`当前用户 ${userProfile.name}，打开设置`}
+              className="user-profile-button"
+              onClick={openSettings}
+              type="button"
+            >
+              <img alt="" src={userProfile.avatar} />
+              <span>{userProfile.name}</span>
             </button>
           </div>
         </header>
@@ -1619,6 +2581,173 @@ export function MediaJournal() {
         ＋
       </button>
 
+      {settingsOpen && (
+        <div className="modal-backdrop settings-backdrop" role="presentation">
+          <div
+            aria-label="设置"
+            aria-modal="true"
+            className="settings-modal"
+            role="dialog"
+          >
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">SETTINGS</span>
+                <h2>设置</h2>
+              </div>
+              <button
+                aria-label="关闭设置"
+                className="close-button"
+                onClick={() => setSettingsOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <form onSubmit={saveSettings}>
+              <section className="settings-section">
+                <div>
+                  <h3>隐藏书目类别</h3>
+                  <p>只影响首页表格，不会删除记录，也不影响统计图。</p>
+                </div>
+                <div className="hidden-filter-options">
+                  <button
+                    aria-pressed={settingsHiddenDraft.includes("all")}
+                    className={settingsHiddenDraft.includes("all") ? "active" : ""}
+                    onClick={() => toggleHiddenFilter("all")}
+                    type="button"
+                  >
+                    <i />
+                    全部网络小说
+                  </button>
+                  {(
+                    ["danmei", "bg", "gen", "other"] as Exclude<
+                      WebFictionType,
+                      ""
+                    >[]
+                  ).map((filter) => (
+                    <button
+                      aria-pressed={settingsHiddenDraft.includes(filter)}
+                      className={
+                        settingsHiddenDraft.includes(filter) ? "active" : ""
+                      }
+                      key={filter}
+                      onClick={() => toggleHiddenFilter(filter)}
+                      type="button"
+                    >
+                      <i />
+                      {filter === "danmei" ? "👬 " : ""}
+                      {webFictionTypeMeta[filter]}
+                    </button>
+                  ))}
+                </div>
+                <small>
+                  当前将隐藏：
+                  {settingsHiddenDraft.includes("all")
+                    ? "全部网络小说"
+                    : settingsHiddenDraft.length
+                      ? settingsHiddenDraft
+                          .map((filter) =>
+                            filter === "all"
+                              ? "全部网络小说"
+                              : webFictionTypeMeta[filter],
+                          )
+                          .join("、")
+                      : "无"}
+                </small>
+                <button
+                  aria-pressed={settingsShowHiddenDraft}
+                  className={
+                    settingsShowHiddenDraft
+                      ? "hidden-visibility-toggle active"
+                      : "hidden-visibility-toggle"
+                  }
+                  disabled={!settingsHiddenEntryCount}
+                  onClick={() =>
+                    setSettingsShowHiddenDraft((current) => !current)
+                  }
+                  type="button"
+                >
+                  <span aria-hidden="true">{settingsShowHiddenDraft ? "◉" : "○"}</span>
+                  <div>
+                    <strong>
+                      {settingsShowHiddenDraft
+                        ? "首页正在显示隐藏书目"
+                        : "显示隐藏书目"}
+                    </strong>
+                    <small>
+                      {settingsHiddenEntryCount
+                        ? `当前有 ${settingsHiddenEntryCount} 条隐藏记录`
+                        : "当前没有隐藏记录"}
+                    </small>
+                  </div>
+                </button>
+              </section>
+
+              <section className="settings-section profile-settings-section">
+                <div>
+                  <h3>用户</h3>
+                  <p>头像和用户名会显示在页面右上角。</p>
+                </div>
+                <div className="profile-settings-row">
+                  <div className="profile-avatar-editor">
+                    <img alt="当前用户头像" src={settingsProfileDraft.avatar} />
+                    <div>
+                      <label>
+                        更换头像
+                        <input
+                          accept="image/*"
+                          onChange={uploadUserAvatar}
+                          type="file"
+                        />
+                      </label>
+                      <button
+                        onClick={() =>
+                          setSettingsProfileDraft((current) => ({
+                            ...current,
+                            avatar: defaultUserProfile.avatar,
+                          }))
+                        }
+                        type="button"
+                      >
+                        恢复默认
+                      </button>
+                    </div>
+                  </div>
+                  <label className="field settings-name-field">
+                    <span>用户名</span>
+                    <input
+                      maxLength={32}
+                      onChange={(event) =>
+                        setSettingsProfileDraft({
+                          ...settingsProfileDraft,
+                          name: event.target.value,
+                        })
+                      }
+                      placeholder="Nicosakiri"
+                      type="text"
+                      value={settingsProfileDraft.name}
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <div className="modal-actions">
+                <button
+                  className="secondary-button"
+                  onClick={() => setSettingsOpen(false)}
+                  type="button"
+                >
+                  取消
+                </button>
+                <button className="primary-button" type="submit">
+                  保存设置
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {editorOpen && (
         <div className="modal-backdrop" role="presentation">
           <div
@@ -1664,7 +2793,7 @@ export function MediaJournal() {
                   <div className="book-category-grid">
                     <div>
                       <small>出版读物</small>
-                      {(["literary", "social_science"] as BookCategory[]).map(
+                      {(["literary", "social_science", "textbook"] as BookCategory[]).map(
                         (category) => (
                           <button
                             className={
@@ -1683,7 +2812,7 @@ export function MediaJournal() {
                     </div>
                     <div>
                       <small>通俗阅读</small>
-                      {(["web_fiction", "manga"] as BookCategory[]).map(
+                      {(["web_fiction", "light_novel", "manga"] as BookCategory[]).map(
                         (category) => (
                           <button
                             className={
@@ -1703,6 +2832,28 @@ export function MediaJournal() {
                   </div>
                 </div>
               )}
+
+              {form.mediaType === "book" &&
+                form.bookCategory === "web_fiction" && (
+                  <div className="series-category-field web-fiction-type-field">
+                    <span>网络文学类型</span>
+                    <div>
+                      {(Object.keys(webFictionTypeMeta) as Exclude<WebFictionType, "">[]).map(
+                        (webType) => (
+                          <button
+                            className={form.webFictionType === webType ? "active" : ""}
+                            key={webType}
+                            onClick={() => setForm({ ...form, webFictionType: webType })}
+                            type="button"
+                          >
+                            {webType === "danmei" ? "👬 " : ""}
+                            {webFictionTypeMeta[webType]}
+                          </button>
+                        ),
+                      )}
+                    </div>
+                  </div>
+                )}
 
               {form.mediaType === "series" && (
                 <div className="series-category-field">
@@ -1944,14 +3095,22 @@ export function MediaJournal() {
                 </label>
                 <label className="field">
                   <span>
-                    {isCinema ? "影院名称（可选）" : "观看平台 / 版本"}
+                    {form.mediaType === "book" && form.bookCategory === "textbook"
+                      ? "学科"
+                      : isCinema
+                        ? "影院名称（可选）"
+                        : "观看平台 / 版本"}
                   </span>
                   <input
                     onChange={(event) =>
                       setForm({ ...form, platform: event.target.value })
                     }
                     placeholder={
-                      isCinema ? "例如：百丽宫影城" : "微信读书、Netflix…"
+                      form.mediaType === "book" && form.bookCategory === "textbook"
+                        ? "例如：经济学、数学、语言学"
+                        : isCinema
+                          ? "例如：百丽宫影城"
+                          : "微信读书、Netflix…"
                     }
                     value={form.platform}
                   />
@@ -2051,15 +3210,67 @@ export function MediaJournal() {
                 <section className="automatic-progress">
                   <div className="automatic-progress-heading">
                     <div>
-                      <span>自动计算进度</span>
+                      <span>{form.progressMode === "percent" ? "直接填写进度" : "自动计算进度"}</span>
                       <small>
                         {editing
                           ? "总量可以修正；当前位置请通过“添加记录”更新。"
-                          : "填写总量和当前位置后，系统自动换算百分比。"}
+                          : form.progressMode === "percent"
+                            ? "适合无法确认页数的电子书或网盘资源。"
+                            : "填写总量和当前位置后，系统自动换算百分比。"}
                       </small>
                     </div>
                     <strong>{computedProgress}%</strong>
                   </div>
+                  {form.mediaType === "book" && (
+                    <div className="progress-mode-switch" aria-label="书籍进度填写方式">
+                      <button
+                        className={form.progressMode === "units" ? "active" : ""}
+                        onClick={() => setForm({ ...form, progressMode: "units" })}
+                        type="button"
+                      >
+                        按页数
+                      </button>
+                      <button
+                        className={form.progressMode === "percent" ? "active" : ""}
+                        onClick={() => setForm({ ...form, progressMode: "percent" })}
+                        type="button"
+                      >
+                        直接填百分比
+                      </button>
+                    </div>
+                  )}
+                  {form.mediaType === "book" && form.progressMode === "percent" ? (
+                    <div className="field-row">
+                      <label className="field">
+                        <span>当前进度（%）</span>
+                        <input
+                          disabled={Boolean(editing)}
+                          max="100"
+                          min="0"
+                          onChange={(event) => setForm({ ...form, manualProgressPercent: event.target.value })}
+                          placeholder="0–100"
+                          step="0.1"
+                          type="number"
+                          value={form.manualProgressPercent}
+                        />
+                      </label>
+                      {form.bookCategory === "light_novel" && (
+                        <label className="field">
+                          <span>看到第几卷</span>
+                          <input
+                            disabled={Boolean(editing)}
+                            min="0"
+                            onChange={(event) => setForm({ ...form, volume: event.target.value })}
+                            placeholder="例如：3"
+                            step="1"
+                            type="number"
+                            value={form.volume}
+                          />
+                        </label>
+                      )}
+                    </div>
+                  ) : (
+                    <>
                   <div className="field-row">
                     <label className="field">
                       <span>
@@ -2100,6 +3311,22 @@ export function MediaJournal() {
                       />
                     </label>
                   </div>
+                  {form.mediaType === "book" && form.bookCategory === "light_novel" && (
+                    <label className="field">
+                      <span>看到第几卷</span>
+                      <input
+                        disabled={Boolean(editing)}
+                        min="0"
+                        onChange={(event) => setForm({ ...form, volume: event.target.value })}
+                        placeholder="例如：3"
+                        step="1"
+                        type="number"
+                        value={form.volume}
+                      />
+                    </label>
+                  )}
+                    </>
+                  )}
                   <ProgressBar percent={computedProgress} />
                 </section>
               )}
@@ -2118,18 +3345,42 @@ export function MediaJournal() {
                 </div>
               )}
 
+              {computedProgress === 100 &&
+                automaticStatus !== "abandoned" &&
+                form.mediaType === "book" &&
+                form.bookCategory === "web_fiction" &&
+                form.webFictionType === "danmei" && (
+                  <label className="field danmei-tags-field">
+                    <span>耽美题材标签</span>
+                    <input
+                      onChange={(event) =>
+                        setForm({ ...form, danmeiTags: event.target.value })
+                      }
+                      placeholder="例如：现代、ABO、骨科（用顿号分隔）"
+                      type="text"
+                      value={form.danmeiTags}
+                    />
+                    <small>随完成评分一起保存，用于耽美统计区。</small>
+                  </label>
+                )}
+
               {!editing && (
-                <label className="field field-wide">
-                  <span>这次的感想</span>
-                  <textarea
-                    onChange={(event) =>
-                      setForm({ ...form, thought: event.target.value })
-                    }
-                    placeholder="可选；之后也可以在条目里继续添加"
-                    rows={4}
-                    value={form.thought}
-                  />
-                </label>
+                <ThoughtComposer
+                  images={formImages}
+                  mediaType={form.mediaType}
+                  onChange={(thought) => setForm({ ...form, thought })}
+                  onError={setError}
+                  onImagesChange={setFormImages}
+                  onQuoteChange={(thoughtQuote) => setForm({ ...form, thoughtQuote })}
+                  onQuoteMinuteChange={(thoughtMinute) => setForm({ ...form, thoughtMinute })}
+                  onThoughtImagesChange={setFormThoughtImages}
+                  placeholder="写下这次的感想（可选）"
+                  quoteMinute={form.thoughtMinute}
+                  quoteText={form.thoughtQuote}
+                  rows={4}
+                  thoughtImages={formThoughtImages}
+                  value={form.thought}
+                />
               )}
 
               <div className="modal-actions">
@@ -2158,7 +3409,7 @@ export function MediaJournal() {
           <aside
             aria-label={`${selected.title} 的详情`}
             aria-modal="true"
-            className="detail-drawer"
+            className={`detail-drawer ${thoughtsExpanded ? "thoughts-expanded" : ""}`}
             role="dialog"
           >
             <div className="drawer-actions">
@@ -2181,16 +3432,35 @@ export function MediaJournal() {
               <button
                 aria-label="关闭"
                 className="close-button"
-                onClick={() => setSelected(null)}
+                onClick={() => {
+                  setSelected(null);
+                  setThoughtsExpanded(false);
+                  setActiveThoughtId(null);
+                }}
                 type="button"
               >
                 ×
               </button>
             </div>
-            <div
+            <button
+              aria-label={
+                selected.coverUrl
+                  ? `放大查看《${selected.title}》封面`
+                  : undefined
+              }
               className={`detail-cover media-${selected.mediaType} ${
                 selected.coverUrl ? "has-image" : ""
               }`}
+              disabled={!selected.coverUrl}
+              onClick={() => {
+                if (!selected.coverUrl) return;
+                setZoomedImage({
+                  id: `cover-${selected.id}`,
+                  name: `《${selected.title}》封面`,
+                  dataUrl: selected.coverUrl,
+                });
+              }}
+              type="button"
             >
               {selected.coverUrl ? (
                 <img
@@ -2204,7 +3474,7 @@ export function MediaJournal() {
                   <i />
                 </>
               )}
-            </div>
+            </button>
             <div className="detail-title">
               <span className="eyebrow">{subtypeLabel(selected)}</span>
               <div className="detail-title-row">
@@ -2231,7 +3501,9 @@ export function MediaJournal() {
                 <dd>{selected.progressText || "未填写"}</dd>
               </div>
               <div>
-                <dt>平台 / 版本</dt>
+                <dt>
+                  {selected.bookCategory === "textbook" ? "学科" : "平台 / 版本"}
+                </dt>
                 <dd>{selected.platform || "未填写"}</dd>
               </div>
               {selected.mediaType === "movie" && selected.movieMode && (
@@ -2250,6 +3522,28 @@ export function MediaJournal() {
                 <div>
                   <dt>剧集分类</dt>
                   <dd>{seriesCategoryMeta[selected.seriesCategory]}</dd>
+                </div>
+              )}
+              {selected.bookCategory === "web_fiction" && selected.webFictionType && (
+                <div>
+                  <dt>网络文学类型</dt>
+                  <dd>
+                    {selected.webFictionType === "danmei" ? "👬 " : ""}
+                    {webFictionTypeMeta[selected.webFictionType]}
+                  </dd>
+                </div>
+              )}
+              {selected.webFictionType === "danmei" &&
+                selected.danmeiTags.length > 0 && (
+                  <div>
+                    <dt>耽美题材</dt>
+                    <dd>{selected.danmeiTags.join(" · ")}</dd>
+                  </div>
+                )}
+              {selected.bookCategory === "light_novel" && selected.volume > 0 && (
+                <div>
+                  <dt>当前卷数</dt>
+                  <dd>第 {selected.volume} 卷</dd>
                 </div>
               )}
               <div>
@@ -2285,11 +3579,15 @@ export function MediaJournal() {
             </div>
 
             <section className="entry-history">
+              <div className="history-heading-row">
               <div className="history-tabs" role="tablist">
                 <button
                   aria-selected={detailTab === "progress"}
                   className={detailTab === "progress" ? "active" : ""}
-                  onClick={() => setDetailTab("progress")}
+                  onClick={() => {
+                    setDetailTab("progress");
+                    setThoughtsExpanded(false);
+                  }}
                   role="tab"
                   type="button"
                 >
@@ -2306,11 +3604,21 @@ export function MediaJournal() {
                   感想
                   <span>
                     {
-                      selected.notes.filter((note) => note.content.trim())
-                        .length
+                      selected.notes.filter(noteHasThought).length
                     }
                   </span>
                 </button>
+              </div>
+                {detailTab === "thoughts" && (
+                  <button
+                    aria-label={thoughtsExpanded ? "退出大屏查看" : "大屏查看感想"}
+                    className="expand-thoughts-button"
+                    onClick={() => setThoughtsExpanded((expanded) => !expanded)}
+                    type="button"
+                  >
+                    {thoughtsExpanded ? "收起" : "大屏"} ⛶
+                  </button>
+                )}
               </div>
               <div className="note-timeline">
                 {detailTab === "progress" ? (
@@ -2331,19 +3639,23 @@ export function MediaJournal() {
                     <p className="no-notes">暂无观看进度。</p>
                   )
                 ) : (
-                  selected.notes.filter((note) => note.content.trim()).length ? (
+                  selected.notes.filter(noteHasThought).length ? (
                     selected.notes
-                      .filter((note) => note.content.trim())
+                      .filter(noteHasThought)
                       .map((note) => (
                         <article className="thought-history-item" key={note.id}>
                           <i className={note.status} />
-                          <div>
+                          <button
+                            className="thought-entry-button"
+                            onClick={() => setActiveThoughtId(note.id)}
+                            type="button"
+                          >
                             <div>
                               <span>{note.progressText || "观看记录"}</span>
                               <time>{formatDate(note.watchedAt)}</time>
                             </div>
-                            <p>{note.content}</p>
-                          </div>
+                            <ThoughtBody mediaType={selected.mediaType} note={note} preview />
+                          </button>
                         </article>
                       ))
                   ) : (
@@ -2356,12 +3668,175 @@ export function MediaJournal() {
             <button
               className="delete-button"
               disabled={saving}
-              onClick={() => void deleteEntry()}
+              onClick={() => setEntryDeleteConfirmOpen(true)}
               type="button"
             >
               删除这条记录
             </button>
           </aside>
+        </div>
+      )}
+
+      {selected && activeThought && (
+        <div className="modal-backdrop thought-detail-backdrop" role="presentation">
+          <article
+            aria-label={`《${selected.title}》的感想`}
+            aria-modal="true"
+            className="thought-detail-modal"
+            role="dialog"
+          >
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">THOUGHT</span>
+                <h2>{activeThought.progressText || "感想"}</h2>
+                <p>{formatDate(activeThought.watchedAt)}</p>
+              </div>
+              <button
+                aria-label="关闭感想"
+                className="close-button"
+                onClick={() => {
+                  setActiveThoughtId(null);
+                  setThoughtEditForm(null);
+                }}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            {thoughtEditForm ? (
+              <form className="thought-edit-form" onSubmit={saveThoughtEdit}>
+                <ThoughtComposer
+                  images={thoughtEditForm.images}
+                  mediaType={selected.mediaType}
+                  onChange={(content) =>
+                    setThoughtEditForm({ ...thoughtEditForm, content })
+                  }
+                  onError={setError}
+                  onImagesChange={(images) =>
+                    setThoughtEditForm({ ...thoughtEditForm, images })
+                  }
+                  onQuoteChange={(quoteText) =>
+                    setThoughtEditForm({ ...thoughtEditForm, quoteText })
+                  }
+                  onQuoteMinuteChange={(quoteMinute) =>
+                    setThoughtEditForm({ ...thoughtEditForm, quoteMinute })
+                  }
+                  onThoughtImagesChange={(thoughtImages) =>
+                    setThoughtEditForm({ ...thoughtEditForm, thoughtImages })
+                  }
+                  placeholder="修改这条感想"
+                  quoteMinute={thoughtEditForm.quoteMinute}
+                  quoteText={thoughtEditForm.quoteText}
+                  rows={8}
+                  thoughtImages={thoughtEditForm.thoughtImages}
+                  value={thoughtEditForm.content}
+                />
+                <div className="modal-actions">
+                  <button
+                    className="secondary-button"
+                    onClick={() => setThoughtEditForm(null)}
+                    type="button"
+                  >
+                    取消
+                  </button>
+                  <button className="primary-button" disabled={saving} type="submit">
+                    {saving ? "正在保存…" : "保存修改"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <>
+                <ThoughtBody
+                  mediaType={selected.mediaType}
+                  note={activeThought}
+                  onImageOpen={setZoomedImage}
+                />
+                <div className="thought-detail-actions">
+                  <button
+                    className="secondary-button"
+                    onClick={() => startEditingThought(activeThought)}
+                    type="button"
+                  >
+                    编辑感想
+                  </button>
+                  <button
+                    className="delete-thought-button"
+                    disabled={saving}
+                    onClick={() => void deleteThought(activeThought.id)}
+                    type="button"
+                  >
+                    删除这条感想
+                  </button>
+                </div>
+              </>
+            )}
+          </article>
+        </div>
+      )}
+
+      {zoomedImage && (
+        <div
+          aria-label="截图放大查看"
+          aria-modal="true"
+          className="image-lightbox-backdrop"
+          onClick={() => setZoomedImage(null)}
+          role="dialog"
+        >
+          <button
+            aria-label="关闭大图"
+            className="image-lightbox-close"
+            onClick={() => setZoomedImage(null)}
+            type="button"
+          >
+            ×
+          </button>
+          <img
+            alt={zoomedImage.name}
+            onClick={(event) => event.stopPropagation()}
+            referrerPolicy="no-referrer"
+            src={zoomedImage.dataUrl}
+          />
+        </div>
+      )}
+
+      {selected && entryDeleteConfirmOpen && (
+        <div
+          className="modal-backdrop delete-confirm-backdrop"
+          onClick={() => !saving && setEntryDeleteConfirmOpen(false)}
+          role="presentation"
+        >
+          <section
+            aria-labelledby="delete-entry-title"
+            aria-modal="true"
+            className="delete-confirm-dialog"
+            onClick={(event) => event.stopPropagation()}
+            role="alertdialog"
+          >
+            <span aria-hidden="true" className="delete-confirm-mark">!</span>
+            <div>
+              <span className="eyebrow">DELETE ENTRY</span>
+              <h2 id="delete-entry-title">删除《{selected.title}》？</h2>
+              <p>条目资料、观看进度和全部感想都会一起删除，且无法恢复。</p>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="secondary-button"
+                disabled={saving}
+                onClick={() => setEntryDeleteConfirmOpen(false)}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                className="delete-confirm-button"
+                disabled={saving}
+                onClick={() => void deleteEntry()}
+                type="button"
+              >
+                {saving ? "正在删除…" : "确认删除"}
+              </button>
+            </div>
+          </section>
         </div>
       )}
 
@@ -2417,7 +3892,41 @@ export function MediaJournal() {
                     </div>
                     <strong>{recordProgress}%</strong>
                   </div>
-                  <label className="field">
+                  {selected.mediaType === "book" && (
+                    <div className="progress-mode-switch" aria-label="书籍进度填写方式">
+                      <button
+                        className={recordForm.progressMode === "units" ? "active" : ""}
+                        onClick={() => setRecordForm({ ...recordForm, progressMode: "units" })}
+                        type="button"
+                      >
+                        按页数
+                      </button>
+                      <button
+                        className={recordForm.progressMode === "percent" ? "active" : ""}
+                        onClick={() => setRecordForm({ ...recordForm, progressMode: "percent" })}
+                        type="button"
+                      >
+                        直接填百分比
+                      </button>
+                    </div>
+                  )}
+                  {selected.mediaType === "book" && recordForm.progressMode === "percent" ? (
+                    <label className="field">
+                      <span>当前进度（%）</span>
+                      <input
+                        autoFocus
+                        max="100"
+                        min="0"
+                        onChange={(event) => setRecordForm({ ...recordForm, manualProgressPercent: event.target.value })}
+                        placeholder="0–100"
+                        required
+                        step="0.1"
+                        type="number"
+                        value={recordForm.manualProgressPercent}
+                      />
+                    </label>
+                  ) : (
+                    <label className="field">
                     <span>
                       {progressUnitMeta[selected.progressUnit].current}
                     </span>
@@ -2438,6 +3947,20 @@ export function MediaJournal() {
                       value={recordForm.currentUnits}
                     />
                   </label>
+                  )}
+                  {selected.mediaType === "book" && selected.bookCategory === "light_novel" && (
+                    <label className="field">
+                      <span>看到第几卷</span>
+                      <input
+                        min="0"
+                        onChange={(event) => setRecordForm({ ...recordForm, volume: event.target.value })}
+                        placeholder="例如：3"
+                        step="1"
+                        type="number"
+                        value={recordForm.volume}
+                      />
+                    </label>
+                  )}
                   <ProgressBar percent={recordProgress} />
                 </section>
               )}
@@ -2491,37 +4014,60 @@ export function MediaJournal() {
               </div>
 
               {recordStatus === "completed" && (
-                <div className="rating-field">
-                  <span>完成评分</span>
-                  <Score
-                    interactive
-                    onChange={(rating) =>
-                      setRecordForm({ ...recordForm, rating })
-                    }
-                    value={recordForm.rating}
-                  />
-                  <small>
-                    {recordForm.rating
-                      ? `${recordForm.rating} / 10`
-                      : "暂不评分"}
-                  </small>
-                </div>
+                <>
+                  <div className="rating-field">
+                    <span>完成评分</span>
+                    <Score
+                      interactive
+                      onChange={(rating) =>
+                        setRecordForm({ ...recordForm, rating })
+                      }
+                      value={recordForm.rating}
+                    />
+                    <small>
+                      {recordForm.rating
+                        ? `${recordForm.rating} / 10`
+                        : "暂不评分"}
+                    </small>
+                  </div>
+                  {selected.bookCategory === "web_fiction" &&
+                    selected.webFictionType === "danmei" && (
+                      <label className="field danmei-tags-field">
+                        <span>耽美题材标签</span>
+                        <input
+                          onChange={(event) =>
+                            setRecordForm({
+                              ...recordForm,
+                              danmeiTags: event.target.value,
+                            })
+                          }
+                          placeholder="例如：现代、ABO、骨科（用顿号分隔）"
+                          type="text"
+                          value={recordForm.danmeiTags}
+                        />
+                        <small>可填写多个，完成后会进入耽美题材统计。</small>
+                      </label>
+                    )}
+                </>
               )}
 
-              <label className="field field-wide">
-                <span>这次的感想</span>
-                <textarea
-                  onChange={(event) =>
-                    setRecordForm({
-                      ...recordForm,
-                      thought: event.target.value,
-                    })
-                  }
-                  placeholder="可选"
-                  rows={5}
-                  value={recordForm.thought}
-                />
-              </label>
+              <ThoughtComposer
+                images={recordForm.images}
+                mediaType={selected.mediaType}
+                onChange={(thought) => setRecordForm({ ...recordForm, thought })}
+                onError={setError}
+                onImagesChange={(images) => setRecordForm({ ...recordForm, images })}
+                onQuoteChange={(quoteText) => setRecordForm({ ...recordForm, quoteText })}
+                onQuoteMinuteChange={(quoteMinute) => setRecordForm({ ...recordForm, quoteMinute })}
+                onThoughtImagesChange={(thoughtImages) =>
+                  setRecordForm({ ...recordForm, thoughtImages })
+                }
+                placeholder="写下这次的感想（可选）"
+                quoteMinute={recordForm.quoteMinute}
+                quoteText={recordForm.quoteText}
+                thoughtImages={recordForm.thoughtImages}
+                value={recordForm.thought}
+              />
 
               <div className="modal-actions">
                 <button

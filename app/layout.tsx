@@ -42,7 +42,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
+    <html data-theme="dark" lang="zh-CN">
       <body className={geist.variable}>{children}</body>
     </html>
   );
