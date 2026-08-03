@@ -215,6 +215,32 @@ select:focus-visible {
   line-height: 1.7;
 }
 
+.sidebar-note > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sidebar-note > div > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0;
+  background: var(--card);
+  font-size: 15px;
+  transition: 160ms ease;
+}
+
+.sidebar-note > div > button:hover {
+  border-color: var(--muted);
+  background: var(--hover);
+  transform: rotate(18deg);
+}
+
 .content {
   min-width: 0;
   padding: 0 5vw 72px;
@@ -2145,6 +2171,277 @@ select:focus-visible {
   z-index: 46;
 }
 
+.sync-backdrop {
+  z-index: 48;
+}
+
+.sync-modal {
+  overflow-y: auto;
+  width: min(680px, 100%);
+  max-height: calc(100vh - 48px);
+  border-radius: 18px;
+  padding: 28px;
+  background: var(--card);
+  box-shadow: 0 24px 70px var(--shadow);
+}
+
+.sync-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.sync-mode-tabs > button {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  gap: 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 13px 15px;
+  background: var(--field);
+  color: var(--muted);
+  text-align: left;
+}
+
+.sync-mode-tabs > button > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--paper-deep);
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.sync-mode-tabs > button > div {
+  display: grid;
+  gap: 4px;
+}
+
+.sync-mode-tabs strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.sync-mode-tabs small {
+  font-size: 9px;
+}
+
+.sync-mode-tabs > button.active {
+  border-color: color-mix(in srgb, var(--progress-blue) 65%, var(--line));
+  background: color-mix(in srgb, var(--progress-blue) 10%, var(--field));
+}
+
+.sync-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+  background: var(--paper);
+}
+
+.sync-host-status {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border-bottom: 1px solid var(--line);
+  padding: 0 0 15px;
+}
+
+.sync-ready-dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--progress-green);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--progress-green) 13%, transparent);
+}
+
+.sync-host-status > div {
+  display: grid;
+  gap: 3px;
+}
+
+.sync-host-status strong {
+  font-size: 12px;
+}
+
+.sync-host-status small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.sync-address-card {
+  display: grid;
+  gap: 7px;
+  border-radius: 11px;
+  padding: 14px;
+  background: var(--field);
+}
+
+.sync-address-card > span,
+.pairing-code-card span,
+.pairing-input-field > span {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.sync-address-card code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
+}
+
+.sync-address-card code small {
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: var(--progress-blue);
+  color: white;
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 8px;
+}
+
+.sync-address-card p,
+.airdrop-option p,
+.airdrop-note,
+.sync-unavailable p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.pairing-code-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 13px 15px;
+}
+
+.pairing-code-card > div {
+  display: grid;
+  gap: 4px;
+}
+
+.pairing-code-card strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 25px;
+  letter-spacing: 0.18em;
+}
+
+.pairing-code-card > small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.pairing-input-field {
+  display: grid;
+  gap: 7px;
+}
+
+.pairing-input-field input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 12px 14px;
+  background: var(--field);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 22px;
+  letter-spacing: 0.22em;
+  text-align: center;
+}
+
+.sync-wide-button {
+  width: 100%;
+  justify-content: center;
+}
+
+.sync-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.sync-steps i {
+  font-style: normal;
+}
+
+.sync-unavailable {
+  display: grid;
+  gap: 7px;
+  border-radius: 11px;
+  padding: 18px;
+  background: var(--field);
+}
+
+.sync-unavailable strong {
+  font-size: 12px;
+}
+
+.airdrop-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  border-bottom: 1px solid var(--line);
+  padding: 4px 0 17px;
+}
+
+.airdrop-option:nth-child(2) {
+  padding-top: 3px;
+}
+
+.airdrop-option > span {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--field);
+  font-size: 18px;
+}
+
+.airdrop-option > div {
+  display: grid;
+  gap: 4px;
+}
+
+.airdrop-option strong {
+  font-size: 12px;
+}
+
+.airdrop-note {
+  padding: 0 2px;
+}
+
+.sync-message {
+  margin-top: 14px;
+  border: 1px solid color-mix(in srgb, var(--progress-blue) 35%, var(--line));
+  border-radius: 10px;
+  padding: 11px 13px;
+  background: color-mix(in srgb, var(--progress-blue) 8%, var(--field));
+  color: var(--ink);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
 .settings-modal {
   overflow-y: auto;
   width: min(720px, 100%);
@@ -3726,6 +4023,45 @@ select:focus-visible {
   .settings-modal {
     max-height: calc(100vh - 24px);
     padding: 22px 18px;
+  }
+
+  .sync-modal {
+    width: 100%;
+    max-height: 94vh;
+    border-radius: 20px 20px 0 0;
+    padding: 22px 18px 28px;
+  }
+
+  .sync-mode-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .sync-mode-tabs > button {
+    min-height: 62px;
+  }
+
+  .pairing-code-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .sync-steps {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .sync-steps i {
+    display: none;
+  }
+
+  .airdrop-option {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .airdrop-option > button {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: center;
   }
 
   .hidden-filter-options {
