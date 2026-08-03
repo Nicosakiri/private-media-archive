@@ -57,6 +57,8 @@ export async function listLocalEntries() {
             (legacyType === "series" ? "tv" : "");
       const normalizedStatus: Entry["status"] =
         (entry.status as string) === "paused" ? "abandoned" : entry.status;
+      const webFictionType: Entry["webFictionType"] =
+        entry.webFictionType || "";
       const notes = (entry.notes || []).map((note, index) => {
         const currentUnits =
           note.currentUnits ??
@@ -67,6 +69,11 @@ export async function listLocalEntries() {
         return {
           ...note,
           content: note.content || "",
+          quoteText: note.quoteText || "",
+          quoteMinute: note.quoteMinute || 0,
+          images: note.images || [],
+          thoughtImages: note.thoughtImages || [],
+          volume: note.volume || 0,
           currentUnits,
           progressPercent,
           status:
@@ -86,9 +93,14 @@ export async function listLocalEntries() {
         notes.push({
           id: `legacy-${entry.id}`,
           content: "",
+          quoteText: "",
+          quoteMinute: 0,
+          images: [],
+          thoughtImages: [],
           progressText: entry.progressText || "",
           currentUnits: entry.currentUnits || 0,
           progressPercent: entry.progressPercent || 0,
+          volume: entry.volume || 0,
           status: normalizedStatus,
           watchedAt:
             entry.lastSeenAt?.slice(0, 10) ||
@@ -100,6 +112,10 @@ export async function listLocalEntries() {
         ...entry,
         mediaType: legacyType === "variety" ? "series" : entry.mediaType,
         seriesCategory,
+        progressMode: entry.progressMode || "units",
+        volume: entry.volume || 0,
+        webFictionType,
+        danmeiTags: entry.danmeiTags || [],
         originalTitle: entry.originalTitle || "",
         cast: entry.cast || "",
         year: entry.year || "",
