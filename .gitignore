@@ -41,6 +41,7 @@ next-env.d.ts
 preview/
 /dist/
 /edgeone-dist/
+/github-pages/
 /.wrangler/
 /outputs/
 /work/
