@@ -64,6 +64,7 @@ export async function listLocalEntries() {
         (entry.status as string) === "paused" ? "abandoned" : entry.status;
       const webFictionType: Entry["webFictionType"] =
         entry.webFictionType || "";
+      const hasStoredNotes = Array.isArray(entry.notes);
       const notes = (entry.notes || []).map((note, index) => {
         const currentUnits =
           note.currentUnits ??
@@ -79,6 +80,9 @@ export async function listLocalEntries() {
           images: note.images || [],
           thoughtImages: note.thoughtImages || [],
           volume: note.volume || 0,
+          segmentCurrentUnits: note.segmentCurrentUnits || 0,
+          segmentTotalUnits: note.segmentTotalUnits || 0,
+          segmentProgressPercent: note.segmentProgressPercent || 0,
           currentUnits,
           progressPercent,
           status:
@@ -94,7 +98,7 @@ export async function listLocalEntries() {
             entry.createdAt.slice(0, 10),
         };
       });
-      if (!notes.length) {
+      if (!hasStoredNotes) {
         notes.push({
           id: `legacy-${entry.id}`,
           content: "",
@@ -104,6 +108,9 @@ export async function listLocalEntries() {
           thoughtImages: [],
           progressText: entry.progressText || "",
           currentUnits: entry.currentUnits || 0,
+          segmentCurrentUnits: entry.segmentCurrentUnits || 0,
+          segmentTotalUnits: entry.segmentTotalUnits || 0,
+          segmentProgressPercent: entry.segmentProgressPercent || 0,
           progressPercent: entry.progressPercent || 0,
           volume: entry.volume || 0,
           status: normalizedStatus,
@@ -118,6 +125,10 @@ export async function listLocalEntries() {
         mediaType: legacyType === "variety" ? "series" : entry.mediaType,
         seriesCategory,
         progressMode: entry.progressMode || "units",
+        totalVolumes: entry.totalVolumes || 0,
+        segmentCurrentUnits: entry.segmentCurrentUnits || 0,
+        segmentTotalUnits: entry.segmentTotalUnits || 0,
+        segmentProgressPercent: entry.segmentProgressPercent || 0,
         volume: entry.volume || 0,
         webFictionType,
         danmeiTags: entry.danmeiTags || [],

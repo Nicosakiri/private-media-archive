@@ -6,9 +6,10 @@ SITE_DIR="${0:A:h}"
 LOCAL_PORT="4317"
 LOCAL_URL="http://127.0.0.1:${LOCAL_PORT}"
 BUNDLED_NODE="/Users/hy151327/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
-BUNDLED_PNPM="/Users/hy151327/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm"
 VITE_ENTRY="$SITE_DIR/node_modules/vite/bin/vite.js"
 LOCAL_CONFIG="$SITE_DIR/vite.local.config.ts"
+FALLBACK_ENTRY="$SITE_DIR/build/local-fallback-server.mjs"
+FALLBACK_INDEX="$SITE_DIR/github-pages/index.html"
 SAFE_WORK_DIR="${TMPDIR:-/private/tmp}"
 export NODE_PATH="$SITE_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
 
@@ -27,22 +28,15 @@ else
   exit 1
 fi
 
-if [[ ! -f "$VITE_ENTRY" ]]; then
-  echo "正在准备本地网站所需文件（只会在缺少依赖时执行）……"
-  if [[ -x "$BUNDLED_PNPM" ]]; then
-    (cd "$SITE_DIR" && CI=true "$BUNDLED_PNPM" install --frozen-lockfile)
-  elif command -v pnpm >/dev/null 2>&1; then
-    (cd "$SITE_DIR" && CI=true pnpm install --frozen-lockfile)
-  else
-    echo "没有找到 pnpm，无法准备本地网站依赖。"
-  fi
-
-  if [[ ! -f "$VITE_ENTRY" ]]; then
-    echo "网站依赖没有安装成功，请确认电脑已联网后再试。"
-    echo "按任意键关闭窗口。"
-    read -k 1
-    exit 1
-  fi
+if [[ -f "$FALLBACK_ENTRY" && -f "$FALLBACK_INDEX" ]]; then
+  SERVER_MODE="fallback"
+elif [[ -f "$VITE_ENTRY" ]]; then
+  SERVER_MODE="vite"
+else
+  echo "没有找到可用的网站运行文件。"
+  echo "按任意键关闭窗口。"
+  read -k 1
+  exit 1
 fi
 
 if curl --silent --fail "$LOCAL_URL" >/dev/null 2>&1; then
@@ -55,10 +49,15 @@ echo "正在启动「Private Media Archive」本地网站……"
 echo "地址：${LOCAL_URL}"
 echo
 
-"$SITE_NODE" "$VITE_ENTRY" "$SITE_DIR" \
-  --config "$LOCAL_CONFIG" \
-  --host 0.0.0.0 \
-  --port "$LOCAL_PORT" &
+if [[ "$SERVER_MODE" == "vite" ]]; then
+  "$SITE_NODE" "$VITE_ENTRY" "$SITE_DIR" \
+    --config "$LOCAL_CONFIG" \
+    --host 0.0.0.0 \
+    --port "$LOCAL_PORT" &
+else
+  echo "开发依赖暂不可用，已自动切换到本地备用模式。"
+  "$SITE_NODE" "$FALLBACK_ENTRY" "$LOCAL_PORT" &
+fi
 
 SITE_SERVER_PID=$!
 

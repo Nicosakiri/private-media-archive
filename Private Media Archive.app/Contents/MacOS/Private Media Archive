@@ -1,0 +1,65 @@
+#!/bin/zsh
+
+PROJECT_DIR="${0:A:h:h:h:h}"
+LOCAL_URL="http://127.0.0.1:4317/"
+LOCAL_PORT="4317"
+BUNDLED_NODE="/Users/hy151327/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+VITE_ENTRY="$PROJECT_DIR/node_modules/vite/bin/vite.js"
+LOCAL_CONFIG="$PROJECT_DIR/vite.local.config.ts"
+FALLBACK_ENTRY="$PROJECT_DIR/build/local-fallback-server.mjs"
+FALLBACK_INDEX="$PROJECT_DIR/github-pages/index.html"
+SAFE_WORK_DIR="${TMPDIR:-/private/tmp}"
+LOG_DIR="$HOME/Library/Logs/Private Media Archive"
+LOG_FILE="$LOG_DIR/local-site.log"
+
+if /usr/bin/curl --silent --fail "$LOCAL_URL" >/dev/null 2>&1; then
+  /usr/bin/open "$LOCAL_URL"
+  exit 0
+fi
+
+if [[ -x "$BUNDLED_NODE" ]]; then
+  SITE_NODE="$BUNDLED_NODE"
+elif command -v node >/dev/null 2>&1; then
+  SITE_NODE="$(command -v node)"
+else
+  /usr/bin/osascript -e 'display alert "Private Media Archive 无法启动" message "没有找到本地运行环境。可以改用‘打开本地网站.command’查看详细信息。" as critical'
+  exit 1
+fi
+
+if [[ -f "$FALLBACK_ENTRY" && -f "$FALLBACK_INDEX" ]]; then
+  SERVER_MODE="fallback"
+elif [[ -f "$VITE_ENTRY" ]]; then
+  SERVER_MODE="vite"
+else
+  /usr/bin/osascript -e 'display alert "Private Media Archive 无法启动" message "没有找到可用的网站运行文件。可以改用‘打开本地网站.command’查看详细信息。" as critical'
+  exit 1
+fi
+
+/bin/mkdir -p "$LOG_DIR"
+cd "$SAFE_WORK_DIR" 2>/dev/null || cd /private/tmp || exit 1
+export NODE_PATH="$PROJECT_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
+
+# Finder 启动时不打开终端；运行信息仍写入日志，手动启动 .command 时则照常可见。
+if [[ "$SERVER_MODE" == "vite" ]]; then
+  nohup "$SITE_NODE" "$VITE_ENTRY" "$PROJECT_DIR" \
+    --config "$LOCAL_CONFIG" \
+    --host 0.0.0.0 \
+    --port "$LOCAL_PORT" >>"$LOG_FILE" 2>&1 &
+else
+  nohup "$SITE_NODE" "$FALLBACK_ENTRY" "$LOCAL_PORT" >>"$LOG_FILE" 2>&1 &
+fi
+SITE_SERVER_PID=$!
+
+for _ in {1..80}; do
+  if /usr/bin/curl --silent --fail "$LOCAL_URL" >/dev/null 2>&1; then
+    /usr/bin/open "$LOCAL_URL"
+    exit 0
+  fi
+  if ! /bin/kill -0 "$SITE_SERVER_PID" >/dev/null 2>&1; then
+    break
+  fi
+  /bin/sleep 0.25
+done
+
+/usr/bin/osascript -e 'display alert "Private Media Archive 没有成功启动" message "请双击‘打开本地网站.command’查看详细错误。" as critical'
+exit 1

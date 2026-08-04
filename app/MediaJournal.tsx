@@ -19,9 +19,11 @@ import {
 import {
   bookCategoryMeta,
   calculateProgress,
+  calculateSegmentedProgress,
   defaultProgressUnit,
   deriveStatus,
   makeProgressText,
+  makeSegmentedProgressText,
   movieModeMeta,
   progressUnitMeta,
   seriesCategoryMeta,
@@ -74,6 +76,8 @@ type DoubanLookupDetails = {
 
 type ViewingRecordForm = {
   currentUnits: string;
+  segmentCurrentUnits: string;
+  segmentTotalUnits: string;
   manualProgressPercent: string;
   progressMode: ProgressMode;
   volume: string;
@@ -90,6 +94,8 @@ type ViewingRecordForm = {
 
 type ThoughtEditForm = {
   currentUnits: string;
+  segmentCurrentUnits: string;
+  segmentTotalUnits: string;
   manualProgressPercent: string;
   progressMode: ProgressMode;
   volume: string;
@@ -107,16 +113,6 @@ type LocalUserProfile = {
   avatar: string;
 };
 
-type LanSyncStatus = {
-  available: true;
-  isHost: boolean;
-  pairingCode: string | null;
-  urls: string[];
-  revision: number;
-  updatedAt: string;
-  entryCount: number;
-};
-
 const defaultUserProfile: LocalUserProfile = {
   name: "Nicosakiri",
   avatar: "nicosakiri-avatar.png",
@@ -126,7 +122,6 @@ const defaultHiddenWebFilters: HiddenWebFilter[] = ["all"];
 const HIDDEN_WEB_FILTERS_KEY = "pma-hidden-web-filters";
 const USER_PROFILE_KEY = "pma-local-user-profile";
 const DEVICE_ID_KEY = "pma-device-id";
-const LAN_PAIRING_CODE_KEY = "pma-lan-pairing-code";
 
 function createLocalId() {
   const webCrypto = globalThis.crypto;
@@ -176,7 +171,10 @@ const emptyForm = (): EntryForm => ({
   progressUnit: "page",
   progressMode: "units",
   totalUnits: "",
+  totalVolumes: "",
   currentUnits: "",
+  segmentCurrentUnits: "",
+  segmentTotalUnits: "",
   manualProgressPercent: "",
   volume: "",
   webFictionType: "",
@@ -212,6 +210,30 @@ function oneDecimalFromForm(value: string) {
   return Math.round(numberFromForm(value) * 10) / 10;
 }
 
+function calculateInnerProgress(
+  progressMode: ProgressMode,
+  manualProgressPercent: string,
+  currentUnits: string,
+  totalUnits: string,
+) {
+  if (progressMode === "percent") {
+    return Math.min(100, oneDecimalFromForm(manualProgressPercent));
+  }
+  const total = numberFromForm(totalUnits);
+  if (!total) return 0;
+  return Math.min(
+    100,
+    Math.round((numberFromForm(currentUnits) / total) * 1000) / 10,
+  );
+}
+
+function isSegmentedEntry(entry: Entry) {
+  return (
+    entry.mediaType === "series" ||
+    (entry.mediaType === "book" && entry.bookCategory === "light_novel")
+  );
+}
+
 function entryMatchesHiddenFilter(
   entry: Entry,
   filters: HiddenWebFilter[],
@@ -238,10 +260,28 @@ function doubanFilledMessage(mediaType: MediaType) {
 }
 
 function viewingRecordForm(entry: Entry): ViewingRecordForm {
+  const latestNote = entry.notes[0];
+  const segmented = isSegmentedEntry(entry);
   return {
     currentUnits: entry.currentUnits ? String(entry.currentUnits) : "",
+    segmentCurrentUnits: latestNote?.segmentCurrentUnits
+      ? String(latestNote.segmentCurrentUnits)
+      : entry.segmentCurrentUnits
+        ? String(entry.segmentCurrentUnits)
+        : "",
+    segmentTotalUnits: latestNote?.segmentTotalUnits
+      ? String(latestNote.segmentTotalUnits)
+      : entry.segmentTotalUnits
+        ? String(entry.segmentTotalUnits)
+        : "",
     manualProgressPercent:
-      entry.progressMode === "percent" ? String(entry.progressPercent) : "",
+      entry.progressMode === "percent"
+        ? String(
+            segmented
+              ? latestNote?.segmentProgressPercent || entry.segmentProgressPercent
+              : entry.progressPercent,
+          )
+        : "",
     progressMode: entry.progressMode || "units",
     volume: entry.volume ? String(entry.volume) : "",
     watchedAt: today(),
@@ -270,6 +310,9 @@ function parseTags(value: string) {
 function calendarProgressLabel(entry: Entry, note: Note) {
   if (entry.mediaType === "movie" && entry.movieMode === "cinema") {
     return "影院观看";
+  }
+  if (isSegmentedEntry(entry)) {
+    return note.progressText || "开始观看";
   }
   if (entry.progressMode === "percent") {
     return note.progressText || `${note.progressPercent}%`;
@@ -338,10 +381,8 @@ function ThoughtComposer({
   onError,
   onImagesChange,
   onQuoteChange,
-  onQuoteMinuteChange,
   onThoughtImagesChange,
   placeholder,
-  quoteMinute,
   quoteText,
   rows = 5,
   thoughtImages,
@@ -353,10 +394,8 @@ function ThoughtComposer({
   onError: (message: string) => void;
   onImagesChange: (images: NoteImage[]) => void;
   onQuoteChange: (value: string) => void;
-  onQuoteMinuteChange: (value: string) => void;
   onThoughtImagesChange: (images: NoteImage[]) => void;
   placeholder: string;
-  quoteMinute: string;
   quoteText: string;
   rows?: number;
   thoughtImages: NoteImage[];
@@ -409,18 +448,14 @@ function ThoughtComposer({
             value={quoteText}
           />
         ) : (
-          <label className="screenshot-minute-field">
-            <span>对应分钟数</span>
-            <input
-              inputMode="numeric"
-              min="0"
-              onChange={(event) => onQuoteMinuteChange(event.target.value)}
-              placeholder="例如：42"
-              step="1"
-              type="number"
-              value={quoteMinute}
-            />
-          </label>
+          <div
+            aria-label="截图粘贴框，聚焦后可直接粘贴图片"
+            className="screenshot-paste-zone"
+            tabIndex={0}
+          >
+            <span>点击此框后直接粘贴截图</span>
+            <small>⌘V / Ctrl+V</small>
+          </div>
         )}
         {images.length > 0 && (
           <div className="thought-image-drafts">
@@ -561,16 +596,19 @@ function ThoughtBody({
 }
 
 function progressTimelineNotes(notes: Note[]) {
-  return notes.filter((note, index) => {
-    const previousProgress = notes[index + 1];
-    if (!previousProgress) return true;
-    return (
-      note.currentUnits !== previousProgress.currentUnits ||
-      note.progressPercent !== previousProgress.progressPercent ||
-      note.volume !== previousProgress.volume ||
-      note.status !== previousProgress.status
-    );
-  });
+  const latestByDay = new Map<string, Note>();
+  for (const note of notes) {
+    const day = note.watchedAt?.slice(0, 10) || note.createdAt.slice(0, 10);
+    const current = latestByDay.get(day);
+    if (!current || note.createdAt.localeCompare(current.createdAt) > 0) {
+      latestByDay.set(day, note);
+    }
+  }
+  return Array.from(latestByDay.values()).sort(
+    (left, right) =>
+      right.watchedAt.localeCompare(left.watchedAt) ||
+      right.createdAt.localeCompare(left.createdAt),
+  );
 }
 
 function posterProxyUrl(url: string) {
@@ -1424,7 +1462,7 @@ function CalendarPage({
   const eventsByDate = useMemo(() => {
     const grouped = new Map<string, Array<{ entry: Entry; note: Note }>>();
     entries.forEach((entry) => {
-      entry.notes.forEach((note) => {
+      progressTimelineNotes(entry.notes).forEach((note) => {
         const date = note.watchedAt || note.createdAt.slice(0, 10);
         const events = grouped.get(date) || [];
         events.push({ entry, note });
@@ -1466,7 +1504,7 @@ function CalendarPage({
         <div>
           <span className="date-kicker">VIEWING CALENDAR</span>
           <h1>观看日历</h1>
-          <p>每一次新增的观看或阅读记录，都会按日期出现在这里。</p>
+          <p>每天只显示每部作品当天最后一次更新的进度。</p>
         </div>
         <div className="calendar-legend" aria-label="日历状态图例">
           {(["in_progress", "completed", "abandoned"] as EntryStatus[]).map(
@@ -1576,8 +1614,6 @@ export function MediaJournal() {
     "progress",
   );
   const [form, setForm] = useState<EntryForm>(emptyForm);
-  const [formImages, setFormImages] = useState<NoteImage[]>([]);
-  const [formThoughtImages, setFormThoughtImages] = useState<NoteImage[]>([]);
   const [saving, setSaving] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
   const [recordForm, setRecordForm] = useState<ViewingRecordForm | null>(null);
@@ -1609,13 +1645,9 @@ export function MediaJournal() {
   const [settingsProfileDraft, setSettingsProfileDraft] =
     useState<LocalUserProfile>(defaultUserProfile);
   const [syncOpen, setSyncOpen] = useState(false);
-  const [syncMode, setSyncMode] = useState<"lan" | "airdrop">("lan");
-  const [lanStatus, setLanStatus] = useState<LanSyncStatus | null>(null);
-  const [lanPairingCode, setLanPairingCode] = useState("");
   const [syncMessage, setSyncMessage] = useState("");
   const [syncBusy, setSyncBusy] = useState(false);
   const syncFileInput = useRef<HTMLInputElement>(null);
-  const lastLanRevision = useRef(0);
 
   async function loadEntries() {
     try {
@@ -1682,98 +1714,9 @@ export function MediaJournal() {
     await loadEntries();
   }
 
-  async function fetchLanStatus() {
-    const response = await fetch("/__pma/sync/status", { cache: "no-store" });
-    if (!response.ok) throw new Error("当前页面没有连接到电脑端同步服务。");
-    return (await response.json()) as LanSyncStatus;
-  }
-
-  async function performLanSync(
-    code = lanPairingCode,
-    statusOverride?: LanSyncStatus,
-  ) {
-    const status = statusOverride || lanStatus;
-    if (!status) throw new Error("请先连接电脑端同步服务。");
-    if (!status.isHost && !/^\d{6}$/.test(code.trim())) {
-      throw new Error("请输入电脑上显示的六位配对码。");
-    }
-
-    const response = await fetch("/__pma/sync/merge", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(status.isHost ? {} : { "X-PMA-Pairing-Code": code.trim() }),
-      },
-      body: JSON.stringify({ archive: await createLocalArchive() }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "局域网同步失败。");
-    const archive = parseArchive(result.archive);
-    await applyLocalArchive(archive);
-    lastLanRevision.current = Number(result.revision) || 0;
-    setLanStatus((current) =>
-      current
-        ? {
-            ...current,
-            revision: lastLanRevision.current,
-            updatedAt: result.updatedAt || new Date().toISOString(),
-            entryCount: archive.entries.length,
-          }
-        : current,
-    );
-    if (!status.isHost) {
-      window.sessionStorage.setItem(LAN_PAIRING_CODE_KEY, code.trim());
-    }
-    setSyncMessage(
-      status.isHost
-        ? "电脑主数据库已准备好，手机现在可以连接并同步。"
-        : `同步完成：手机和电脑现在共有 ${archive.entries.length} 条记录。`,
-    );
-  }
-
-  async function openSyncCenter() {
+  function openSyncCenter() {
     setSyncOpen(true);
     setSyncMessage("");
-    if (window.location.hostname.endsWith(".github.io")) {
-      setSyncMode("airdrop");
-      setLanStatus(null);
-      setSyncBusy(false);
-      return;
-    }
-    setSyncMode("lan");
-    setLanPairingCode(
-      window.sessionStorage.getItem(LAN_PAIRING_CODE_KEY) || "",
-    );
-    setSyncBusy(true);
-    try {
-      const status = await fetchLanStatus();
-      setLanStatus(status);
-      lastLanRevision.current = status.revision;
-      if (status.isHost) await performLanSync("", status);
-    } catch (syncError) {
-      setLanStatus(null);
-      setSyncMessage(
-        syncError instanceof Error
-          ? syncError.message
-          : "当前页面没有连接到电脑端同步服务。",
-      );
-    } finally {
-      setSyncBusy(false);
-    }
-  }
-
-  async function syncFromLan() {
-    setSyncBusy(true);
-    setSyncMessage("");
-    try {
-      await performLanSync();
-    } catch (syncError) {
-      setSyncMessage(
-        syncError instanceof Error ? syncError.message : "局域网同步失败。",
-      );
-    } finally {
-      setSyncBusy(false);
-    }
   }
 
   async function exportSyncPackage() {
@@ -1865,35 +1808,6 @@ export function MediaJournal() {
     const localSession = new EventSource("/__pma/session");
     return () => localSession.close();
   }, []);
-
-  useEffect(() => {
-    if (!lanStatus?.isHost) return;
-    let checking = false;
-    const interval = window.setInterval(async () => {
-      if (checking) return;
-      checking = true;
-      try {
-        const status = await fetchLanStatus();
-        setLanStatus(status);
-        if (status.revision > lastLanRevision.current) {
-          const response = await fetch("/__pma/sync/pull", { cache: "no-store" });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "同步数据读取失败。");
-          const archive = parseArchive(result.archive);
-          await applyLocalArchive(archive);
-          lastLanRevision.current = Number(result.revision) || status.revision;
-          setSyncMessage(
-            `已收到手机的新数据，电脑主数据库现在有 ${archive.entries.length} 条记录。`,
-          );
-        }
-      } catch {
-        // 下一轮继续检查，避免短暂断网打断本地使用。
-      } finally {
-        checking = false;
-      }
-    }, 2500);
-    return () => window.clearInterval(interval);
-  }, [lanStatus?.isHost]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("liuhen-theme");
@@ -2064,12 +1978,35 @@ export function MediaJournal() {
   );
 
   const totalUnits = numberFromForm(form.totalUnits);
+  const totalVolumes = numberFromForm(form.totalVolumes);
+  const isLightNovelForm =
+    form.mediaType === "book" && form.bookCategory === "light_novel";
   const currentUnits = Math.min(
-    totalUnits || Number.POSITIVE_INFINITY,
+    (isLightNovelForm
+      ? numberFromForm(form.segmentTotalUnits)
+      : totalUnits) || Number.POSITIVE_INFINITY,
     numberFromForm(form.currentUnits),
   );
+  const formSegmentProgress = calculateInnerProgress(
+    form.progressMode,
+    form.manualProgressPercent,
+    isLightNovelForm ? form.currentUnits : form.segmentCurrentUnits,
+    form.segmentTotalUnits,
+  );
   const computedProgress =
-    form.mediaType === "book" && form.progressMode === "percent"
+    isLightNovelForm
+      ? calculateSegmentedProgress(
+          totalVolumes,
+          numberFromForm(form.volume),
+          formSegmentProgress,
+        )
+      : form.mediaType === "series"
+        ? calculateSegmentedProgress(
+            totalUnits,
+            currentUnits,
+            formSegmentProgress,
+          )
+        : form.mediaType === "book" && form.progressMode === "percent"
       ? Math.min(100, oneDecimalFromForm(form.manualProgressPercent))
       : calculateProgress(form.movieMode, totalUnits, currentUnits);
   const automaticStatus = deriveStatus(
@@ -2081,13 +2018,40 @@ export function MediaJournal() {
   const recordCurrentUnits =
     selected && recordForm
       ? Math.min(
-          selected.totalUnits || Number.POSITIVE_INFINITY,
+          (selected.mediaType === "book" &&
+          selected.bookCategory === "light_novel"
+            ? numberFromForm(recordForm.segmentTotalUnits)
+            : selected.totalUnits) || Number.POSITIVE_INFINITY,
           numberFromForm(recordForm.currentUnits),
+        )
+      : 0;
+  const recordSegmentProgress =
+    selected && recordForm && isSegmentedEntry(selected)
+      ? calculateInnerProgress(
+          recordForm.progressMode,
+          recordForm.manualProgressPercent,
+          selected.mediaType === "book"
+            ? recordForm.currentUnits
+            : recordForm.segmentCurrentUnits,
+          recordForm.segmentTotalUnits,
         )
       : 0;
   const recordProgress =
     selected && recordForm
-      ? selected.mediaType === "book" && recordForm.progressMode === "percent"
+      ? selected.mediaType === "book" &&
+        selected.bookCategory === "light_novel"
+        ? calculateSegmentedProgress(
+            selected.totalVolumes,
+            numberFromForm(recordForm.volume),
+            recordSegmentProgress,
+          )
+        : selected.mediaType === "series"
+          ? calculateSegmentedProgress(
+              selected.totalUnits,
+              recordCurrentUnits,
+              recordSegmentProgress,
+            )
+          : selected.mediaType === "book" && recordForm.progressMode === "percent"
         ? Math.min(100, oneDecimalFromForm(recordForm.manualProgressPercent))
         : calculateProgress(
             selected.movieMode,
@@ -2103,14 +2067,41 @@ export function MediaJournal() {
   const thoughtEditCurrentUnits =
     selected && thoughtEditForm
       ? Math.min(
-          selected.totalUnits || Number.POSITIVE_INFINITY,
+          (selected.mediaType === "book" &&
+          selected.bookCategory === "light_novel"
+            ? numberFromForm(thoughtEditForm.segmentTotalUnits)
+            : selected.totalUnits) || Number.POSITIVE_INFINITY,
           numberFromForm(thoughtEditForm.currentUnits),
+        )
+      : 0;
+  const thoughtEditSegmentProgress =
+    selected && thoughtEditForm && isSegmentedEntry(selected)
+      ? calculateInnerProgress(
+          thoughtEditForm.progressMode,
+          thoughtEditForm.manualProgressPercent,
+          selected.mediaType === "book"
+            ? thoughtEditForm.currentUnits
+            : thoughtEditForm.segmentCurrentUnits,
+          thoughtEditForm.segmentTotalUnits,
         )
       : 0;
   const thoughtEditProgress =
     selected && thoughtEditForm
       ? selected.mediaType === "book" &&
-        thoughtEditForm.progressMode === "percent"
+        selected.bookCategory === "light_novel"
+        ? calculateSegmentedProgress(
+            selected.totalVolumes,
+            numberFromForm(thoughtEditForm.volume),
+            thoughtEditSegmentProgress,
+          )
+        : selected.mediaType === "series"
+          ? calculateSegmentedProgress(
+              selected.totalUnits,
+              thoughtEditCurrentUnits,
+              thoughtEditSegmentProgress,
+            )
+          : selected.mediaType === "book" &&
+            thoughtEditForm.progressMode === "percent"
         ? Math.min(
             100,
             oneDecimalFromForm(thoughtEditForm.manualProgressPercent),
@@ -2125,8 +2116,6 @@ export function MediaJournal() {
   function openCreate() {
     setEditing(null);
     setForm(emptyForm());
-    setFormImages([]);
-    setFormThoughtImages([]);
     setMovieLookupQuery("");
     setMovieLookupResults([]);
     setMovieLookupMessage("");
@@ -2194,9 +2183,22 @@ export function MediaJournal() {
       progressUnit: entry.progressUnit,
       progressMode: entry.progressMode || "units",
       totalUnits: entry.totalUnits ? String(entry.totalUnits) : "",
+      totalVolumes: entry.totalVolumes ? String(entry.totalVolumes) : "",
       currentUnits: entry.currentUnits ? String(entry.currentUnits) : "",
+      segmentCurrentUnits: entry.segmentCurrentUnits
+        ? String(entry.segmentCurrentUnits)
+        : "",
+      segmentTotalUnits: entry.segmentTotalUnits
+        ? String(entry.segmentTotalUnits)
+        : "",
       manualProgressPercent:
-        entry.progressMode === "percent" ? String(entry.progressPercent) : "",
+        entry.progressMode === "percent"
+          ? String(
+              isSegmentedEntry(entry)
+                ? entry.segmentProgressPercent
+                : entry.progressPercent,
+            )
+          : "",
       volume: entry.volume ? String(entry.volume) : "",
       webFictionType: entry.webFictionType || "",
       danmeiTags: entry.danmeiTags.join("、"),
@@ -2212,8 +2214,6 @@ export function MediaJournal() {
       thoughtQuote: "",
       thoughtMinute: "",
     });
-    setFormImages([]);
-    setFormThoughtImages([]);
     setMovieLookupQuery("");
     setMovieLookupResults([]);
     setMovieLookupMessage("");
@@ -2231,7 +2231,10 @@ export function MediaJournal() {
       progressMode: "units",
       status: "in_progress",
       totalUnits: "",
+      totalVolumes: "",
       currentUnits: "",
+      segmentCurrentUnits: "",
+      segmentTotalUnits: "",
       manualProgressPercent: "",
       volume: "",
       webFictionType: "",
@@ -2367,9 +2370,18 @@ export function MediaJournal() {
         year: subject.year || current.year,
         doubanUrl: subject.sourceUrl || current.doubanUrl,
         coverUrl: coverUrl || current.coverUrl,
-        totalUnits: subject.totalUnits
+        totalUnits:
+          selectedType === "book" && current.bookCategory === "light_novel"
+            ? current.totalUnits
+            : subject.totalUnits
           ? String(subject.totalUnits)
           : current.totalUnits,
+        segmentTotalUnits:
+          selectedType === "book" &&
+          current.bookCategory === "light_novel" &&
+          subject.totalUnits
+            ? String(subject.totalUnits)
+            : current.segmentTotalUnits,
         currentUnits:
           current.movieMode === "cinema" && subject.totalUnits
             ? String(subject.totalUnits)
@@ -2395,49 +2407,52 @@ export function MediaJournal() {
     try {
       const now = new Date().toISOString();
       const progressPercent =
-        form.mediaType === "book" && form.progressMode === "percent"
-          ? Math.min(100, oneDecimalFromForm(form.manualProgressPercent))
-          : calculateProgress(form.movieMode, totalUnits, currentUnits);
+        computedProgress;
       const status = deriveStatus(
         progressPercent,
         form.status === "abandoned",
       );
       const storedCurrentUnits =
+        form.mediaType === "book" &&
         form.progressMode === "percent"
           ? 0
-          : progressPercent === 100 && totalUnits
+          : !isLightNovelForm && progressPercent === 100 && totalUnits
             ? totalUnits
             : currentUnits;
       const volume = numberFromForm(form.volume);
-      const progressText = makeProgressText(
-        form.mediaType,
-        form.movieMode,
-        form.progressUnit,
-        totalUnits,
-        storedCurrentUnits,
-        form.progressMode,
-        progressPercent,
-        volume,
-      );
-      const thought = form.thought.trim();
+      const segmentCurrentUnits =
+        form.mediaType === "series"
+          ? numberFromForm(form.segmentCurrentUnits)
+          : isLightNovelForm
+            ? storedCurrentUnits
+            : 0;
+      const segmentTotalUnits =
+        isLightNovelForm || form.mediaType === "series"
+          ? numberFromForm(form.segmentTotalUnits)
+          : 0;
+      const segmentProgressPercent =
+        isLightNovelForm || form.mediaType === "series"
+          ? formSegmentProgress
+          : 0;
+      const progressText =
+        isLightNovelForm || form.mediaType === "series"
+          ? makeSegmentedProgressText(
+              isLightNovelForm ? "volume" : "episode",
+              isLightNovelForm ? volume : storedCurrentUnits,
+              segmentCurrentUnits,
+              segmentProgressPercent,
+            )
+          : makeProgressText(
+              form.mediaType,
+              form.movieMode,
+              form.progressUnit,
+              totalUnits,
+              storedCurrentUnits,
+              form.progressMode,
+              progressPercent,
+              volume,
+            );
       const notes: Note[] = editing ? [...editing.notes] : [];
-      if (!editing) {
-        notes.unshift({
-          id: createLocalId(),
-          content: thought,
-          quoteText: form.thoughtQuote.trim(),
-          quoteMinute: numberFromForm(form.thoughtMinute),
-          images: formImages,
-          thoughtImages: formThoughtImages,
-          progressText,
-          currentUnits: storedCurrentUnits,
-          progressPercent,
-          volume,
-          status,
-          watchedAt: form.lastSeenAt,
-          createdAt: now,
-        });
-      }
       const entry: Entry = {
         id: editing?.id ?? createLocalId(),
         title: form.title.trim(),
@@ -2453,10 +2468,17 @@ export function MediaJournal() {
         progressText,
         progressPercent,
         progressUnit: form.progressUnit,
-        progressMode: form.mediaType === "book" ? form.progressMode : "units",
+        progressMode:
+          form.mediaType === "book" || form.mediaType === "series"
+            ? form.progressMode
+            : "units",
         totalUnits,
+        totalVolumes: isLightNovelForm ? totalVolumes : 0,
         currentUnits: storedCurrentUnits,
-        volume: form.mediaType === "book" ? volume : 0,
+        segmentCurrentUnits,
+        segmentTotalUnits,
+        segmentProgressPercent,
+        volume: isLightNovelForm ? volume : 0,
         webFictionType:
           form.bookCategory === "web_fiction" ? form.webFictionType : "",
         danmeiTags:
@@ -2493,8 +2515,6 @@ export function MediaJournal() {
       );
       setEditorOpen(false);
       setEditing(null);
-      setFormImages([]);
-      setFormThoughtImages([]);
       setError("");
     } catch {
       setError("这次没有保存成功，请检查浏览器是否允许本地存储。");
@@ -2515,23 +2535,43 @@ export function MediaJournal() {
     setSaving(true);
     try {
       const now = new Date().toISOString();
+      const segmented = isSegmentedEntry(selected);
+      const lightNovel =
+        selected.mediaType === "book" &&
+        selected.bookCategory === "light_novel";
       const storedCurrentUnits =
-        recordForm.progressMode === "percent"
+        selected.mediaType === "book" && recordForm.progressMode === "percent"
           ? 0
-          : recordProgress === 100 && selected.totalUnits
+          : !lightNovel && recordProgress === 100 && selected.totalUnits
             ? selected.totalUnits
             : recordCurrentUnits;
       const volume = numberFromForm(recordForm.volume);
-      const progressText = makeProgressText(
-        selected.mediaType,
-        selected.movieMode,
-        selected.progressUnit,
-        selected.totalUnits,
-        storedCurrentUnits,
-        recordForm.progressMode,
-        recordProgress,
-        volume,
-      );
+      const segmentCurrentUnits =
+        selected.mediaType === "series"
+          ? numberFromForm(recordForm.segmentCurrentUnits)
+          : lightNovel
+            ? storedCurrentUnits
+            : 0;
+      const segmentTotalUnits = segmented
+        ? numberFromForm(recordForm.segmentTotalUnits)
+        : 0;
+      const progressText = segmented
+        ? makeSegmentedProgressText(
+            lightNovel ? "volume" : "episode",
+            lightNovel ? volume : storedCurrentUnits,
+            segmentCurrentUnits,
+            recordSegmentProgress,
+          )
+        : makeProgressText(
+            selected.mediaType,
+            selected.movieMode,
+            selected.progressUnit,
+            selected.totalUnits,
+            storedCurrentUnits,
+            recordForm.progressMode,
+            recordProgress,
+            volume,
+          );
       const note: Note = {
         id: createLocalId(),
         content: recordForm.thought.trim(),
@@ -2541,6 +2581,9 @@ export function MediaJournal() {
         thoughtImages: recordForm.thoughtImages,
         progressText,
         currentUnits: storedCurrentUnits,
+        segmentCurrentUnits,
+        segmentTotalUnits,
+        segmentProgressPercent: recordSegmentProgress,
         progressPercent: recordProgress,
         volume,
         status: recordStatus,
@@ -2554,7 +2597,10 @@ export function MediaJournal() {
         progressPercent: recordProgress,
         progressMode: recordForm.progressMode,
         currentUnits: storedCurrentUnits,
-        volume,
+        segmentCurrentUnits,
+        segmentTotalUnits,
+        segmentProgressPercent: recordSegmentProgress,
+        volume: lightNovel ? volume : 0,
         lastSeenAt: recordForm.watchedAt,
         completedAt:
           recordStatus === "completed"
@@ -2649,18 +2695,32 @@ export function MediaJournal() {
   }
 
   function startEditingThought(note: Note) {
-    const progressMode: ProgressMode =
-      selected?.mediaType === "book" &&
-      (note.progressText.includes("%") ||
-        (note.currentUnits === 0 &&
-          note.progressPercent > 0 &&
-          selected.progressMode === "percent"))
+    const segmented = selected ? isSegmentedEntry(selected) : false;
+    const progressMode: ProgressMode = segmented
+      ? note.segmentTotalUnits > 0
+        ? "units"
+        : "percent"
+      : selected?.mediaType === "book" &&
+          (note.progressText.includes("%") ||
+            (note.currentUnits === 0 &&
+              note.progressPercent > 0 &&
+              selected.progressMode === "percent"))
         ? "percent"
         : "units";
     setThoughtEditForm({
       currentUnits: note.currentUnits ? String(note.currentUnits) : "",
+      segmentCurrentUnits: note.segmentCurrentUnits
+        ? String(note.segmentCurrentUnits)
+        : "",
+      segmentTotalUnits: note.segmentTotalUnits
+        ? String(note.segmentTotalUnits)
+        : "",
       manualProgressPercent:
-        progressMode === "percent" ? String(note.progressPercent) : "",
+        progressMode === "percent"
+          ? String(
+              segmented ? note.segmentProgressPercent : note.progressPercent,
+            )
+          : "",
       progressMode,
       volume: note.volume ? String(note.volume) : "",
       content: note.content,
@@ -2676,34 +2736,54 @@ export function MediaJournal() {
     if (!selected || !activeThought || !thoughtEditForm) return;
     setSaving(true);
     try {
+      const segmented = isSegmentedEntry(selected);
+      const lightNovel =
+        selected.mediaType === "book" &&
+        selected.bookCategory === "light_novel";
       const progressMode =
-        selected.mediaType === "book"
+        selected.mediaType === "book" || selected.mediaType === "series"
           ? thoughtEditForm.progressMode
           : "units";
       const storedCurrentUnits =
-        progressMode === "percent"
+        selected.mediaType === "book" && progressMode === "percent"
           ? 0
-          : thoughtEditProgress === 100 && selected.totalUnits
+          : !lightNovel && thoughtEditProgress === 100 && selected.totalUnits
             ? selected.totalUnits
             : thoughtEditCurrentUnits;
       const volume =
-        selected.mediaType === "book"
+        lightNovel
           ? numberFromForm(thoughtEditForm.volume)
           : 0;
+      const segmentCurrentUnits =
+        selected.mediaType === "series"
+          ? numberFromForm(thoughtEditForm.segmentCurrentUnits)
+          : lightNovel
+            ? storedCurrentUnits
+            : 0;
+      const segmentTotalUnits = segmented
+        ? numberFromForm(thoughtEditForm.segmentTotalUnits)
+        : 0;
       const status = deriveStatus(
         thoughtEditProgress,
         activeThought.status === "abandoned",
       );
-      const progressText = makeProgressText(
-        selected.mediaType,
-        selected.movieMode,
-        selected.progressUnit,
-        selected.totalUnits,
-        storedCurrentUnits,
-        progressMode,
-        thoughtEditProgress,
-        volume,
-      );
+      const progressText = segmented
+        ? makeSegmentedProgressText(
+            lightNovel ? "volume" : "episode",
+            lightNovel ? volume : storedCurrentUnits,
+            segmentCurrentUnits,
+            thoughtEditSegmentProgress,
+          )
+        : makeProgressText(
+            selected.mediaType,
+            selected.movieMode,
+            selected.progressUnit,
+            selected.totalUnits,
+            storedCurrentUnits,
+            progressMode,
+            thoughtEditProgress,
+            volume,
+          );
       const editsLatestProgress = selected.notes[0]?.id === activeThought.id;
       const updated: Entry = {
         ...selected,
@@ -2714,6 +2794,9 @@ export function MediaJournal() {
               progressPercent: thoughtEditProgress,
               progressMode,
               currentUnits: storedCurrentUnits,
+              segmentCurrentUnits,
+              segmentTotalUnits,
+              segmentProgressPercent: thoughtEditSegmentProgress,
               volume,
               lastSeenAt: activeThought.watchedAt,
               completedAt:
@@ -2730,6 +2813,9 @@ export function MediaJournal() {
                 ...note,
                 progressText,
                 currentUnits: storedCurrentUnits,
+                segmentCurrentUnits,
+                segmentTotalUnits,
+                segmentProgressPercent: thoughtEditSegmentProgress,
                 progressPercent: thoughtEditProgress,
                 volume,
                 status,
@@ -2805,7 +2891,7 @@ export function MediaJournal() {
               🔄
             </button>
           </div>
-          <p>可通过同一 Wi‑Fi 或 AirDrop 在设备间同步。</p>
+          <p>通过 AirDrop 数据包在设备间合并记录。</p>
         </div>
       </aside>
 
@@ -3002,9 +3088,9 @@ export function MediaJournal() {
           >
             <div className="modal-heading">
               <div>
-                <span className="eyebrow">LOCAL SYNC</span>
-                <h2>数据同步</h2>
-                <p>电脑作为主数据库，合并后两台设备都会获得最新版。</p>
+                <span className="eyebrow">DATA PACKAGE</span>
+                <h2>数据包同步</h2>
+                <p>通过 AirDrop 或“文件”在两台设备之间合并完整记录。</p>
               </div>
               <button
                 aria-label="关闭数据同步"
@@ -3016,117 +3102,7 @@ export function MediaJournal() {
               </button>
             </div>
 
-            <div className="sync-mode-tabs" aria-label="同步方式">
-              <button
-                className={syncMode === "lan" ? "active" : ""}
-                onClick={() => setSyncMode("lan")}
-                type="button"
-              >
-                <span>⌁</span>
-                <div>
-                  <strong>同一 Wi‑Fi</strong>
-                  <small>手机与电脑直接合并</small>
-                </div>
-              </button>
-              <button
-                className={syncMode === "airdrop" ? "active" : ""}
-                onClick={() => setSyncMode("airdrop")}
-                type="button"
-              >
-                <span>↗</span>
-                <div>
-                  <strong>AirDrop 数据包</strong>
-                  <small>导出或导入完整记录</small>
-                </div>
-              </button>
-            </div>
-
-            {syncMode === "lan" ? (
-              <section className="sync-panel">
-                {lanStatus?.isHost ? (
-                  <>
-                    <div className="sync-host-status">
-                      <span className="sync-ready-dot" />
-                      <div>
-                        <strong>电脑主数据库已开启</strong>
-                        <small>保持本地应用和这个页面开启，等待手机连接。</small>
-                      </div>
-                    </div>
-                    <div className="sync-address-card">
-                      <span>手机访问地址</span>
-                      {lanStatus.urls.map((url, index) => (
-                        <code key={url}>
-                          {url}
-                          {index === 0 && <small>推荐</small>}
-                        </code>
-                      ))}
-                      <p>优先使用带 .local 的地址；打不开时再尝试数字 IP 地址。</p>
-                    </div>
-                    <div className="pairing-code-card">
-                      <div>
-                        <span>本次配对码</span>
-                        <strong>{lanStatus.pairingCode}</strong>
-                      </div>
-                      <small>每次重新启动电脑端都会更换。</small>
-                    </div>
-                    <button
-                      className="secondary-button sync-wide-button"
-                      disabled={syncBusy}
-                      onClick={() => void syncFromLan()}
-                      type="button"
-                    >
-                      {syncBusy ? "正在准备…" : "更新电脑同步副本"}
-                    </button>
-                  </>
-                ) : lanStatus ? (
-                  <>
-                    <div className="sync-host-status">
-                      <span className="sync-ready-dot" />
-                      <div>
-                        <strong>已找到电脑端</strong>
-                        <small>输入电脑屏幕上的配对码，再同步手机中的新记录。</small>
-                      </div>
-                    </div>
-                    <label className="pairing-input-field">
-                      <span>六位配对码</span>
-                      <input
-                        autoComplete="one-time-code"
-                        inputMode="numeric"
-                        maxLength={6}
-                        onChange={(event) =>
-                          setLanPairingCode(event.target.value.replace(/\D/g, ""))
-                        }
-                        placeholder="000000"
-                        value={lanPairingCode}
-                      />
-                    </label>
-                    <button
-                      className="primary-button sync-wide-button"
-                      disabled={syncBusy}
-                      onClick={() => void syncFromLan()}
-                      type="button"
-                    >
-                      {syncBusy ? "正在合并…" : "同步到电脑并取回最新版"}
-                    </button>
-                  </>
-                ) : (
-                  <div className="sync-unavailable">
-                    <strong>这里没有检测到电脑端同步服务</strong>
-                    <p>
-                      请先在电脑上打开本地 App，再让手机使用电脑同步窗口显示的地址访问。
-                    </p>
-                  </div>
-                )}
-                <div className="sync-steps">
-                  <span>1&nbsp; 手机上传新数据</span>
-                  <i>→</i>
-                  <span>2&nbsp; 电脑合并主库</span>
-                  <i>→</i>
-                  <span>3&nbsp; 手机取回最新版</span>
-                </div>
-              </section>
-            ) : (
-              <section className="sync-panel airdrop-panel">
+            <section className="sync-panel airdrop-panel">
                 <div className="airdrop-option">
                   <span aria-hidden="true">↗</span>
                   <div>
@@ -3167,8 +3143,7 @@ export function MediaJournal() {
                 <p className="airdrop-note">
                   导入采用合并方式，不会直接清空本机数据；删除记录也会随同步包传递。
                 </p>
-              </section>
-            )}
+            </section>
 
             {syncMessage && (
               <div className="sync-message" role="status">
@@ -3808,19 +3783,30 @@ export function MediaJournal() {
                 <section className="automatic-progress">
                   <div className="automatic-progress-heading">
                     <div>
-                      <span>{form.progressMode === "percent" ? "直接填写进度" : "自动计算进度"}</span>
+                      <span>
+                        {isLightNovelForm
+                          ? "轻小说总卷数"
+                          : form.mediaType === "series"
+                            ? "剧集总集数"
+                            : form.progressMode === "percent"
+                              ? "直接填写进度"
+                              : "自动计算进度"}
+                      </span>
                       <small>
-                        {editing
-                          ? "总量可以修正；当前位置请通过“添加记录”更新。"
-                          : form.progressMode === "percent"
-                            ? "适合无法确认页数的电子书或网盘资源。"
-                            : "填写总量和当前位置后，系统自动换算百分比。"}
+                        {isLightNovelForm || form.mediaType === "series"
+                          ? "这里仅维护作品总量；当前位置统一在“添加记录”中填写。"
+                          : editing
+                            ? "总量可以修正；当前位置请通过“添加记录”更新。"
+                            : form.progressMode === "percent"
+                              ? "适合无法确认页数的电子书或网盘资源。"
+                              : "填写总量和当前位置后，系统自动换算百分比。"}
                       </small>
                     </div>
                     <strong>{computedProgress}%</strong>
                   </div>
-                  {form.mediaType === "book" && (
-                    <div className="progress-mode-switch" aria-label="书籍进度填写方式">
+
+                  {form.mediaType === "book" && !isLightNovelForm && (
+                    <div className="progress-mode-switch" aria-label="进度填写方式">
                       <button
                         className={form.progressMode === "units" ? "active" : ""}
                         onClick={() => setForm({ ...form, progressMode: "units" })}
@@ -3837,7 +3823,38 @@ export function MediaJournal() {
                       </button>
                     </div>
                   )}
-                  {form.mediaType === "book" && form.progressMode === "percent" ? (
+
+                  {isLightNovelForm ? (
+                    <label className="field">
+                      <span>共多少卷</span>
+                      <input
+                        min="1"
+                        onChange={(event) =>
+                          setForm({ ...form, totalVolumes: event.target.value })
+                        }
+                        placeholder="例如：10"
+                        required
+                        step="1"
+                        type="number"
+                        value={form.totalVolumes}
+                      />
+                    </label>
+                  ) : form.mediaType === "series" ? (
+                    <label className="field">
+                      <span>总集数</span>
+                      <input
+                        min="1"
+                        onChange={(event) =>
+                          setForm({ ...form, totalUnits: event.target.value })
+                        }
+                        placeholder="例如：12"
+                        required
+                        step="1"
+                        type="number"
+                        value={form.totalUnits}
+                      />
+                    </label>
+                  ) : form.mediaType === "book" && form.progressMode === "percent" ? (
                     <div className="field-row">
                       <label className="field">
                         <span>当前进度（%）</span>
@@ -3852,78 +3869,38 @@ export function MediaJournal() {
                           value={form.manualProgressPercent}
                         />
                       </label>
-                      {form.bookCategory === "light_novel" && (
-                        <label className="field">
-                          <span>看到第几卷</span>
-                          <input
-                            disabled={Boolean(editing)}
-                            min="0"
-                            onChange={(event) => setForm({ ...form, volume: event.target.value })}
-                            placeholder="例如：3"
-                            step="1"
-                            type="number"
-                            value={form.volume}
-                          />
-                        </label>
-                      )}
                     </div>
                   ) : (
-                    <>
-                  <div className="field-row">
-                    <label className="field">
-                      <span>
-                        {progressUnitMeta[form.progressUnit].total}
-                      </span>
-                      <input
-                        min="0"
-                        onChange={(event) =>
-                          setForm({
-                            ...form,
-                            totalUnits: event.target.value,
-                          })
-                        }
-                        placeholder="0"
-                        step="1"
-                        type="number"
-                        value={form.totalUnits}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>
-                        {progressUnitMeta[form.progressUnit].current}
-                      </span>
-                      <input
-                        disabled={Boolean(editing)}
-                        max={form.totalUnits || undefined}
-                        min="0"
-                        onChange={(event) =>
-                          setForm({
-                            ...form,
-                            currentUnits: event.target.value,
-                          })
-                        }
-                        placeholder="0"
-                        step="1"
-                        type="number"
-                        value={form.currentUnits}
-                      />
-                    </label>
-                  </div>
-                  {form.mediaType === "book" && form.bookCategory === "light_novel" && (
-                    <label className="field">
-                      <span>看到第几卷</span>
-                      <input
-                        disabled={Boolean(editing)}
-                        min="0"
-                        onChange={(event) => setForm({ ...form, volume: event.target.value })}
-                        placeholder="例如：3"
-                        step="1"
-                        type="number"
-                        value={form.volume}
-                      />
-                    </label>
-                  )}
-                    </>
+                    <div className="field-row">
+                      <label className="field">
+                        <span>{progressUnitMeta[form.progressUnit].total}</span>
+                        <input
+                          min="0"
+                          onChange={(event) =>
+                            setForm({ ...form, totalUnits: event.target.value })
+                          }
+                          placeholder="0"
+                          step="1"
+                          type="number"
+                          value={form.totalUnits}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>{progressUnitMeta[form.progressUnit].current}</span>
+                        <input
+                          disabled={Boolean(editing)}
+                          max={form.totalUnits || undefined}
+                          min="0"
+                          onChange={(event) =>
+                            setForm({ ...form, currentUnits: event.target.value })
+                          }
+                          placeholder="0"
+                          step="1"
+                          type="number"
+                          value={form.currentUnits}
+                        />
+                      </label>
+                    </div>
                   )}
                   <ProgressBar percent={computedProgress} />
                 </section>
@@ -3961,25 +3938,6 @@ export function MediaJournal() {
                     <small>随完成评分一起保存，用于耽美统计区。</small>
                   </label>
                 )}
-
-              {!editing && (
-                <ThoughtComposer
-                  images={formImages}
-                  mediaType={form.mediaType}
-                  onChange={(thought) => setForm({ ...form, thought })}
-                  onError={setError}
-                  onImagesChange={setFormImages}
-                  onQuoteChange={(thoughtQuote) => setForm({ ...form, thoughtQuote })}
-                  onQuoteMinuteChange={(thoughtMinute) => setForm({ ...form, thoughtMinute })}
-                  onThoughtImagesChange={setFormThoughtImages}
-                  placeholder="写下这次的感想（可选）"
-                  quoteMinute={form.thoughtMinute}
-                  quoteText={form.thoughtQuote}
-                  rows={4}
-                  thoughtImages={formThoughtImages}
-                  value={form.thought}
-                />
-              )}
 
               <div className="modal-actions">
                 <button
@@ -4142,6 +4100,18 @@ export function MediaJournal() {
                 <div>
                   <dt>当前卷数</dt>
                   <dd>第 {selected.volume} 卷</dd>
+                </div>
+              )}
+              {selected.bookCategory === "light_novel" && selected.totalVolumes > 0 && (
+                <div>
+                  <dt>总卷数</dt>
+                  <dd>共 {selected.totalVolumes} 卷</dd>
+                </div>
+              )}
+              {selected.mediaType === "series" && selected.segmentTotalUnits > 0 && (
+                <div>
+                  <dt>估算单集时长</dt>
+                  <dd>{selected.segmentTotalUnits} 分钟</dd>
                 </div>
               )}
               <div>
@@ -4326,9 +4296,9 @@ export function MediaJournal() {
                       <strong>{thoughtEditProgress}%</strong>
                     </div>
 
-                    {selected.mediaType === "book" && (
+                    {(selected.mediaType === "book" || selected.mediaType === "series") && (
                       <div
-                        aria-label="书籍进度填写方式"
+                        aria-label="进度填写方式"
                         className="progress-mode-switch"
                       >
                         <button
@@ -4345,7 +4315,7 @@ export function MediaJournal() {
                           }
                           type="button"
                         >
-                          按页数
+                          {selected.mediaType === "series" ? "按分钟估算" : "按页数"}
                         </button>
                         <button
                           className={
@@ -4361,12 +4331,169 @@ export function MediaJournal() {
                           }
                           type="button"
                         >
-                          直接填百分比
+                          {selected.bookCategory === "light_novel"
+                            ? "填本卷百分比"
+                            : selected.mediaType === "series"
+                              ? "填本集百分比"
+                              : "直接填百分比"}
                         </button>
                       </div>
                     )}
 
                     {selected.mediaType === "book" &&
+                    selected.bookCategory === "light_novel" ? (
+                      <>
+                        <label className="field">
+                          <span>当时看到第几卷（共 {selected.totalVolumes || "?"} 卷）</span>
+                          <input
+                            max={selected.totalVolumes || undefined}
+                            min="0"
+                            onChange={(event) =>
+                              setThoughtEditForm({
+                                ...thoughtEditForm,
+                                volume: event.target.value,
+                              })
+                            }
+                            placeholder="例如：5"
+                            required
+                            step="1"
+                            type="number"
+                            value={thoughtEditForm.volume}
+                          />
+                        </label>
+                        {thoughtEditForm.progressMode === "percent" ? (
+                          <label className="field">
+                            <span>当时本卷进度（%）</span>
+                            <input
+                              max="100"
+                              min="0"
+                              onChange={(event) =>
+                                setThoughtEditForm({
+                                  ...thoughtEditForm,
+                                  manualProgressPercent: event.target.value,
+                                })
+                              }
+                              placeholder="0–100"
+                              required
+                              step="0.1"
+                              type="number"
+                              value={thoughtEditForm.manualProgressPercent}
+                            />
+                          </label>
+                        ) : (
+                          <div className="field-row">
+                            <label className="field">
+                              <span>当时看到第几页</span>
+                              <input
+                                max={thoughtEditForm.segmentTotalUnits || undefined}
+                                min="0"
+                                onChange={(event) =>
+                                  setThoughtEditForm({
+                                    ...thoughtEditForm,
+                                    currentUnits: event.target.value,
+                                  })
+                                }
+                                required
+                                step="1"
+                                type="number"
+                                value={thoughtEditForm.currentUnits}
+                              />
+                            </label>
+                            <label className="field">
+                              <span>当时本卷总页数</span>
+                              <input
+                                min="0"
+                                onChange={(event) =>
+                                  setThoughtEditForm({
+                                    ...thoughtEditForm,
+                                    segmentTotalUnits: event.target.value,
+                                  })
+                                }
+                                required
+                                step="1"
+                                type="number"
+                                value={thoughtEditForm.segmentTotalUnits}
+                              />
+                            </label>
+                          </div>
+                        )}
+                      </>
+                    ) : selected.mediaType === "series" ? (
+                      <>
+                        <label className="field">
+                          <span>当时看到第几集（共 {selected.totalUnits || "?"} 集）</span>
+                          <input
+                            max={selected.totalUnits || undefined}
+                            min="0"
+                            onChange={(event) =>
+                              setThoughtEditForm({
+                                ...thoughtEditForm,
+                                currentUnits: event.target.value,
+                              })
+                            }
+                            required
+                            step="1"
+                            type="number"
+                            value={thoughtEditForm.currentUnits}
+                          />
+                        </label>
+                        {thoughtEditForm.progressMode === "percent" ? (
+                          <label className="field">
+                            <span>当时本集进度（%）</span>
+                            <input
+                              max="100"
+                              min="0"
+                              onChange={(event) =>
+                                setThoughtEditForm({
+                                  ...thoughtEditForm,
+                                  manualProgressPercent: event.target.value,
+                                })
+                              }
+                              required
+                              step="0.1"
+                              type="number"
+                              value={thoughtEditForm.manualProgressPercent}
+                            />
+                          </label>
+                        ) : (
+                          <div className="field-row">
+                            <label className="field">
+                              <span>当时本集第几分钟</span>
+                              <input
+                                max={thoughtEditForm.segmentTotalUnits || undefined}
+                                min="0"
+                                onChange={(event) =>
+                                  setThoughtEditForm({
+                                    ...thoughtEditForm,
+                                    segmentCurrentUnits: event.target.value,
+                                  })
+                                }
+                                required
+                                step="0.1"
+                                type="number"
+                                value={thoughtEditForm.segmentCurrentUnits}
+                              />
+                            </label>
+                            <label className="field">
+                              <span>估算每集时长（分钟）</span>
+                              <input
+                                min="0"
+                                onChange={(event) =>
+                                  setThoughtEditForm({
+                                    ...thoughtEditForm,
+                                    segmentTotalUnits: event.target.value,
+                                  })
+                                }
+                                required
+                                step="0.1"
+                                type="number"
+                                value={thoughtEditForm.segmentTotalUnits}
+                              />
+                            </label>
+                          </div>
+                        )}
+                      </>
+                    ) : selected.mediaType === "book" &&
                     thoughtEditForm.progressMode === "percent" ? (
                       <label className="field">
                         <span>当时进度（%）</span>
@@ -4409,26 +4536,6 @@ export function MediaJournal() {
                       </label>
                     )}
 
-                    {selected.mediaType === "book" &&
-                      selected.bookCategory === "light_novel" && (
-                        <label className="field">
-                          <span>当时看到第几卷</span>
-                          <input
-                            min="0"
-                            onChange={(event) =>
-                              setThoughtEditForm({
-                                ...thoughtEditForm,
-                                volume: event.target.value,
-                              })
-                            }
-                            placeholder="例如：3"
-                            step="1"
-                            type="number"
-                            value={thoughtEditForm.volume}
-                          />
-                        </label>
-                      )}
-
                     <ProgressBar percent={thoughtEditProgress} />
                   </section>
                 )}
@@ -4445,14 +4552,10 @@ export function MediaJournal() {
                   onQuoteChange={(quoteText) =>
                     setThoughtEditForm({ ...thoughtEditForm, quoteText })
                   }
-                  onQuoteMinuteChange={(quoteMinute) =>
-                    setThoughtEditForm({ ...thoughtEditForm, quoteMinute })
-                  }
                   onThoughtImagesChange={(thoughtImages) =>
                     setThoughtEditForm({ ...thoughtEditForm, thoughtImages })
                   }
                   placeholder="修改这条感想"
-                  quoteMinute={thoughtEditForm.quoteMinute}
                   quoteText={thoughtEditForm.quoteText}
                   rows={8}
                   thoughtImages={thoughtEditForm.thoughtImages}
@@ -4613,31 +4716,195 @@ export function MediaJournal() {
                     <div>
                       <span>这次看到哪里</span>
                       <small>
-                        总量 {selected.totalUnits || "未填写"}{" "}
-                        {progressUnitMeta[selected.progressUnit].unit}
+                        总量{" "}
+                        {selected.bookCategory === "light_novel"
+                          ? `${selected.totalVolumes || "未填写"} 卷`
+                          : `${selected.totalUnits || "未填写"} ${progressUnitMeta[selected.progressUnit].unit}`}
                       </small>
                     </div>
                     <strong>{recordProgress}%</strong>
                   </div>
-                  {selected.mediaType === "book" && (
-                    <div className="progress-mode-switch" aria-label="书籍进度填写方式">
+                  {(selected.mediaType === "book" || selected.mediaType === "series") && (
+                    <div className="progress-mode-switch" aria-label="进度填写方式">
                       <button
                         className={recordForm.progressMode === "units" ? "active" : ""}
                         onClick={() => setRecordForm({ ...recordForm, progressMode: "units" })}
                         type="button"
                       >
-                        按页数
+                        {selected.mediaType === "series" ? "按分钟估算" : "按页数"}
                       </button>
                       <button
                         className={recordForm.progressMode === "percent" ? "active" : ""}
                         onClick={() => setRecordForm({ ...recordForm, progressMode: "percent" })}
                         type="button"
                       >
-                        直接填百分比
+                        {selected.bookCategory === "light_novel"
+                          ? "填本卷百分比"
+                          : selected.mediaType === "series"
+                            ? "填本集百分比"
+                            : "直接填百分比"}
                       </button>
                     </div>
                   )}
-                  {selected.mediaType === "book" && recordForm.progressMode === "percent" ? (
+                  {selected.mediaType === "book" &&
+                  selected.bookCategory === "light_novel" ? (
+                    <>
+                      <label className="field">
+                        <span>看到第几卷（共 {selected.totalVolumes || "?"} 卷）</span>
+                        <input
+                          autoFocus
+                          max={selected.totalVolumes || undefined}
+                          min="0"
+                          onChange={(event) =>
+                            setRecordForm({ ...recordForm, volume: event.target.value })
+                          }
+                          placeholder="例如：5"
+                          required
+                          step="1"
+                          type="number"
+                          value={recordForm.volume}
+                        />
+                      </label>
+                      {recordForm.progressMode === "percent" ? (
+                        <label className="field">
+                          <span>本卷进度（%）</span>
+                          <input
+                            max="100"
+                            min="0"
+                            onChange={(event) =>
+                              setRecordForm({
+                                ...recordForm,
+                                manualProgressPercent: event.target.value,
+                              })
+                            }
+                            placeholder="0–100"
+                            required
+                            step="0.1"
+                            type="number"
+                            value={recordForm.manualProgressPercent}
+                          />
+                        </label>
+                      ) : (
+                        <div className="field-row">
+                          <label className="field">
+                            <span>本卷看到第几页</span>
+                            <input
+                              max={recordForm.segmentTotalUnits || undefined}
+                              min="0"
+                              onChange={(event) =>
+                                setRecordForm({
+                                  ...recordForm,
+                                  currentUnits: event.target.value,
+                                })
+                              }
+                              placeholder="例如：120"
+                              required
+                              step="1"
+                              type="number"
+                              value={recordForm.currentUnits}
+                            />
+                          </label>
+                          <label className="field">
+                            <span>本卷总页数</span>
+                            <input
+                              min="0"
+                              onChange={(event) =>
+                                setRecordForm({
+                                  ...recordForm,
+                                  segmentTotalUnits: event.target.value,
+                                })
+                              }
+                              placeholder="例如：240"
+                              required
+                              step="1"
+                              type="number"
+                              value={recordForm.segmentTotalUnits}
+                            />
+                          </label>
+                        </div>
+                      )}
+                    </>
+                  ) : selected.mediaType === "series" ? (
+                    <>
+                      <label className="field">
+                        <span>看到第几集（共 {selected.totalUnits || "?"} 集）</span>
+                        <input
+                          autoFocus
+                          max={selected.totalUnits || undefined}
+                          min="0"
+                          onChange={(event) =>
+                            setRecordForm({
+                              ...recordForm,
+                              currentUnits: event.target.value,
+                            })
+                          }
+                          placeholder="例如：5"
+                          required
+                          step="1"
+                          type="number"
+                          value={recordForm.currentUnits}
+                        />
+                      </label>
+                      {recordForm.progressMode === "percent" ? (
+                        <label className="field">
+                          <span>本集进度（%）</span>
+                          <input
+                            max="100"
+                            min="0"
+                            onChange={(event) =>
+                              setRecordForm({
+                                ...recordForm,
+                                manualProgressPercent: event.target.value,
+                              })
+                            }
+                            placeholder="0–100"
+                            required
+                            step="0.1"
+                            type="number"
+                            value={recordForm.manualProgressPercent}
+                          />
+                        </label>
+                      ) : (
+                        <div className="field-row">
+                          <label className="field">
+                            <span>本集看到第几分钟</span>
+                            <input
+                              max={recordForm.segmentTotalUnits || undefined}
+                              min="0"
+                              onChange={(event) =>
+                                setRecordForm({
+                                  ...recordForm,
+                                  segmentCurrentUnits: event.target.value,
+                                })
+                              }
+                              placeholder="例如：18"
+                              required
+                              step="0.1"
+                              type="number"
+                              value={recordForm.segmentCurrentUnits}
+                            />
+                          </label>
+                          <label className="field">
+                            <span>估算每集时长（分钟）</span>
+                            <input
+                              min="0"
+                              onChange={(event) =>
+                                setRecordForm({
+                                  ...recordForm,
+                                  segmentTotalUnits: event.target.value,
+                                })
+                              }
+                              placeholder="例如：45"
+                              required
+                              step="0.1"
+                              type="number"
+                              value={recordForm.segmentTotalUnits}
+                            />
+                          </label>
+                        </div>
+                      )}
+                    </>
+                  ) : selected.mediaType === "book" && recordForm.progressMode === "percent" ? (
                     <label className="field">
                       <span>当前进度（%）</span>
                       <input
@@ -4674,19 +4941,6 @@ export function MediaJournal() {
                       value={recordForm.currentUnits}
                     />
                   </label>
-                  )}
-                  {selected.mediaType === "book" && selected.bookCategory === "light_novel" && (
-                    <label className="field">
-                      <span>看到第几卷</span>
-                      <input
-                        min="0"
-                        onChange={(event) => setRecordForm({ ...recordForm, volume: event.target.value })}
-                        placeholder="例如：3"
-                        step="1"
-                        type="number"
-                        value={recordForm.volume}
-                      />
-                    </label>
                   )}
                   <ProgressBar percent={recordProgress} />
                 </section>
@@ -4785,12 +5039,10 @@ export function MediaJournal() {
                 onError={setError}
                 onImagesChange={(images) => setRecordForm({ ...recordForm, images })}
                 onQuoteChange={(quoteText) => setRecordForm({ ...recordForm, quoteText })}
-                onQuoteMinuteChange={(quoteMinute) => setRecordForm({ ...recordForm, quoteMinute })}
                 onThoughtImagesChange={(thoughtImages) =>
                   setRecordForm({ ...recordForm, thoughtImages })
                 }
                 placeholder="写下这次的感想（可选）"
-                quoteMinute={recordForm.quoteMinute}
                 quoteText={recordForm.quoteText}
                 thoughtImages={recordForm.thoughtImages}
                 value={recordForm.thought}

@@ -3559,6 +3559,35 @@ select:focus-visible {
   outline-offset: 3px;
 }
 
+.screenshot-paste-zone {
+  min-height: 82px;
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--field);
+  color: var(--muted);
+  text-align: center;
+  cursor: text;
+}
+
+.screenshot-paste-zone span {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.screenshot-paste-zone small {
+  font-size: 9px;
+}
+
+.screenshot-paste-zone:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
 .thought-reference-heading {
   display: flex;
   align-items: center;
@@ -3578,8 +3607,7 @@ select:focus-visible {
 }
 
 .thought-reference-box textarea,
-.thought-text-field textarea,
-.screenshot-minute-field input {
+.thought-text-field textarea {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -3587,15 +3615,6 @@ select:focus-visible {
   background: var(--field);
   line-height: 1.6;
   resize: vertical;
-}
-
-.screenshot-minute-field {
-  display: grid;
-  grid-template-columns: auto minmax(110px, 180px);
-  align-items: center;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 10px;
 }
 
 .thought-text-field {

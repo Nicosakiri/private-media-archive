@@ -26,6 +26,9 @@ export type Note = {
   quoteMinute: number;
   progressText: string;
   currentUnits: number;
+  segmentCurrentUnits: number;
+  segmentTotalUnits: number;
+  segmentProgressPercent: number;
   progressPercent: number;
   status: EntryStatus;
   volume: number;
@@ -50,7 +53,11 @@ export type Entry = {
   progressUnit: ProgressUnit;
   progressMode: ProgressMode;
   totalUnits: number;
+  totalVolumes: number;
   currentUnits: number;
+  segmentCurrentUnits: number;
+  segmentTotalUnits: number;
+  segmentProgressPercent: number;
   volume: number;
   webFictionType: WebFictionType;
   danmeiTags: string[];
@@ -81,7 +88,10 @@ export type EntryForm = {
   progressUnit: ProgressUnit;
   progressMode: ProgressMode;
   totalUnits: string;
+  totalVolumes: string;
   currentUnits: string;
+  segmentCurrentUnits: string;
+  segmentTotalUnits: string;
   manualProgressPercent: string;
   volume: string;
   webFictionType: WebFictionType;
@@ -177,6 +187,38 @@ export function calculateProgress(
   if (!Number.isFinite(totalUnits) || totalUnits <= 0) return 0;
   const value = Math.round((Math.max(0, currentUnits) / totalUnits) * 100);
   return Math.min(100, Math.max(0, value));
+}
+
+export function calculateSegmentedProgress(
+  totalSegments: number,
+  currentSegment: number,
+  segmentProgressPercent: number,
+) {
+  if (!Number.isFinite(totalSegments) || totalSegments <= 0) return 0;
+  if (!Number.isFinite(currentSegment) || currentSegment <= 0) return 0;
+  const segment = Math.min(totalSegments, Math.max(0, currentSegment));
+  const inner = Math.min(100, Math.max(0, segmentProgressPercent)) / 100;
+  const completedSegments = Math.max(0, segment - 1);
+  const value = ((completedSegments + inner) / totalSegments) * 100;
+  return Math.min(100, Math.max(0, Math.round(value * 10) / 10));
+}
+
+export function makeSegmentedProgressText(
+  kind: "volume" | "episode",
+  currentSegment: number,
+  segmentCurrentUnits: number,
+  segmentProgressPercent: number,
+) {
+  const segmentLabel = kind === "volume" ? "卷" : "集";
+  const positionLabel = kind === "volume" ? "页" : "分钟";
+  const parts = currentSegment > 0 ? [`第 ${currentSegment} ${segmentLabel}`] : [];
+  if (segmentCurrentUnits > 0) {
+    parts.push(`第 ${segmentCurrentUnits} ${positionLabel}`);
+  }
+  if (segmentProgressPercent > 0) {
+    parts.push(`${Math.round(segmentProgressPercent * 10) / 10}%`);
+  }
+  return parts.join(" · ");
 }
 
 export function deriveStatus(
