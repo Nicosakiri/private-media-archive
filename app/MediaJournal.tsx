@@ -89,6 +89,10 @@ type ViewingRecordForm = {
 };
 
 type ThoughtEditForm = {
+  currentUnits: string;
+  manualProgressPercent: string;
+  progressMode: ProgressMode;
+  volume: string;
   content: string;
   quoteText: string;
   quoteMinute: string;
@@ -2096,6 +2100,27 @@ export function MediaJournal() {
     deriveStatus(recordProgress, recordForm.status === "abandoned");
   const activeThought =
     selected?.notes.find((note) => note.id === activeThoughtId) || null;
+  const thoughtEditCurrentUnits =
+    selected && thoughtEditForm
+      ? Math.min(
+          selected.totalUnits || Number.POSITIVE_INFINITY,
+          numberFromForm(thoughtEditForm.currentUnits),
+        )
+      : 0;
+  const thoughtEditProgress =
+    selected && thoughtEditForm
+      ? selected.mediaType === "book" &&
+        thoughtEditForm.progressMode === "percent"
+        ? Math.min(
+            100,
+            oneDecimalFromForm(thoughtEditForm.manualProgressPercent),
+          )
+        : calculateProgress(
+            selected.movieMode,
+            selected.totalUnits,
+            thoughtEditCurrentUnits,
+          )
+      : 0;
 
   function openCreate() {
     setEditing(null);
@@ -2624,7 +2649,20 @@ export function MediaJournal() {
   }
 
   function startEditingThought(note: Note) {
+    const progressMode: ProgressMode =
+      selected?.mediaType === "book" &&
+      (note.progressText.includes("%") ||
+        (note.currentUnits === 0 &&
+          note.progressPercent > 0 &&
+          selected.progressMode === "percent"))
+        ? "percent"
+        : "units";
     setThoughtEditForm({
+      currentUnits: note.currentUnits ? String(note.currentUnits) : "",
+      manualProgressPercent:
+        progressMode === "percent" ? String(note.progressPercent) : "",
+      progressMode,
+      volume: note.volume ? String(note.volume) : "",
       content: note.content,
       quoteText: note.quoteText,
       quoteMinute: note.quoteMinute ? String(note.quoteMinute) : "",
@@ -2638,13 +2676,63 @@ export function MediaJournal() {
     if (!selected || !activeThought || !thoughtEditForm) return;
     setSaving(true);
     try {
+      const progressMode =
+        selected.mediaType === "book"
+          ? thoughtEditForm.progressMode
+          : "units";
+      const storedCurrentUnits =
+        progressMode === "percent"
+          ? 0
+          : thoughtEditProgress === 100 && selected.totalUnits
+            ? selected.totalUnits
+            : thoughtEditCurrentUnits;
+      const volume =
+        selected.mediaType === "book"
+          ? numberFromForm(thoughtEditForm.volume)
+          : 0;
+      const status = deriveStatus(
+        thoughtEditProgress,
+        activeThought.status === "abandoned",
+      );
+      const progressText = makeProgressText(
+        selected.mediaType,
+        selected.movieMode,
+        selected.progressUnit,
+        selected.totalUnits,
+        storedCurrentUnits,
+        progressMode,
+        thoughtEditProgress,
+        volume,
+      );
+      const editsLatestProgress = selected.notes[0]?.id === activeThought.id;
       const updated: Entry = {
         ...selected,
+        ...(editsLatestProgress
+          ? {
+              status,
+              progressText,
+              progressPercent: thoughtEditProgress,
+              progressMode,
+              currentUnits: storedCurrentUnits,
+              volume,
+              lastSeenAt: activeThought.watchedAt,
+              completedAt:
+                status === "completed"
+                  ? selected.completedAt || activeThought.watchedAt
+                  : "",
+              rating: status === "completed" ? selected.rating : null,
+            }
+          : {}),
         updatedAt: new Date().toISOString(),
         notes: selected.notes.map((note) =>
           note.id === activeThought.id
             ? {
                 ...note,
+                progressText,
+                currentUnits: storedCurrentUnits,
+                progressPercent: thoughtEditProgress,
+                volume,
+                status,
                 content: thoughtEditForm.content.trim(),
                 quoteText: thoughtEditForm.quoteText.trim(),
                 quoteMinute: numberFromForm(thoughtEditForm.quoteMinute),
@@ -4215,6 +4303,135 @@ export function MediaJournal() {
             </div>
             {thoughtEditForm ? (
               <form className="thought-edit-form" onSubmit={saveThoughtEdit}>
+                {selected.mediaType === "movie" &&
+                selected.movieMode === "cinema" ? (
+                  <div className="record-cinema-progress thought-progress-editor">
+                    <span className="title-status-dot completed" />
+                    <div>
+                      <strong>影院观看 · 进度 100%</strong>
+                      <small>影院记录默认保持完成状态。</small>
+                    </div>
+                  </div>
+                ) : (
+                  <section className="automatic-progress thought-progress-editor">
+                    <div className="automatic-progress-heading">
+                      <div>
+                        <span>这条感想的进度</span>
+                        <small>
+                          {selected.notes[0]?.id === activeThought.id
+                            ? "保存后，首页的最新进度也会同步更新。"
+                            : "保存后，只修改这条历史进度。"}
+                        </small>
+                      </div>
+                      <strong>{thoughtEditProgress}%</strong>
+                    </div>
+
+                    {selected.mediaType === "book" && (
+                      <div
+                        aria-label="书籍进度填写方式"
+                        className="progress-mode-switch"
+                      >
+                        <button
+                          className={
+                            thoughtEditForm.progressMode === "units"
+                              ? "active"
+                              : ""
+                          }
+                          onClick={() =>
+                            setThoughtEditForm({
+                              ...thoughtEditForm,
+                              progressMode: "units",
+                            })
+                          }
+                          type="button"
+                        >
+                          按页数
+                        </button>
+                        <button
+                          className={
+                            thoughtEditForm.progressMode === "percent"
+                              ? "active"
+                              : ""
+                          }
+                          onClick={() =>
+                            setThoughtEditForm({
+                              ...thoughtEditForm,
+                              progressMode: "percent",
+                            })
+                          }
+                          type="button"
+                        >
+                          直接填百分比
+                        </button>
+                      </div>
+                    )}
+
+                    {selected.mediaType === "book" &&
+                    thoughtEditForm.progressMode === "percent" ? (
+                      <label className="field">
+                        <span>当时进度（%）</span>
+                        <input
+                          max="100"
+                          min="0"
+                          onChange={(event) =>
+                            setThoughtEditForm({
+                              ...thoughtEditForm,
+                              manualProgressPercent: event.target.value,
+                            })
+                          }
+                          placeholder="0–100"
+                          required
+                          step="0.1"
+                          type="number"
+                          value={thoughtEditForm.manualProgressPercent}
+                        />
+                      </label>
+                    ) : (
+                      <label className="field">
+                        <span>
+                          {progressUnitMeta[selected.progressUnit].current}
+                        </span>
+                        <input
+                          max={selected.totalUnits || undefined}
+                          min="0"
+                          onChange={(event) =>
+                            setThoughtEditForm({
+                              ...thoughtEditForm,
+                              currentUnits: event.target.value,
+                            })
+                          }
+                          placeholder="0"
+                          required
+                          step="1"
+                          type="number"
+                          value={thoughtEditForm.currentUnits}
+                        />
+                      </label>
+                    )}
+
+                    {selected.mediaType === "book" &&
+                      selected.bookCategory === "light_novel" && (
+                        <label className="field">
+                          <span>当时看到第几卷</span>
+                          <input
+                            min="0"
+                            onChange={(event) =>
+                              setThoughtEditForm({
+                                ...thoughtEditForm,
+                                volume: event.target.value,
+                              })
+                            }
+                            placeholder="例如：3"
+                            step="1"
+                            type="number"
+                            value={thoughtEditForm.volume}
+                          />
+                        </label>
+                      )}
+
+                    <ProgressBar percent={thoughtEditProgress} />
+                  </section>
+                )}
                 <ThoughtComposer
                   images={thoughtEditForm.images}
                   mediaType={selected.mediaType}
