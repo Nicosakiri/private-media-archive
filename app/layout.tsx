@@ -16,23 +16,22 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase,
-    title: "留痕 · 我的书影音手帐",
-    description: "记录书籍、电影、剧集与漫画的观看进度、平台、评分和感想。",
+    title: "Private Media Archive",
+    description:
+      "本地记录书籍、电影及电视剧、动漫、综艺的进度、平台、评分和感想。",
     icons: {
       icon: "/favicon.svg",
       shortcut: "/favicon.svg",
     },
     openGraph: {
-      title: "留痕 · 我的书影音手帐",
-      description: "进度、平台、评分、感想与统计。",
-      images: metadataBase ? [new URL("/og.png", metadataBase).toString()] : [],
+      title: "Private Media Archive",
+      description: "书影音进度、平台、评分、感想与统计。",
       type: "website",
     },
     twitter: {
       card: "summary_large_image",
-      title: "留痕 · 我的书影音手帐",
-      description: "进度、平台、评分、感想与统计。",
-      images: metadataBase ? [new URL("/og.png", metadataBase).toString()] : [],
+      title: "Private Media Archive",
+      description: "书影音进度、平台、评分、感想与统计。",
     },
   };
 }
@@ -43,7 +42,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
+    <html data-theme="dark" lang="zh-CN">
       <body className={geist.variable}>{children}</body>
     </html>
   );

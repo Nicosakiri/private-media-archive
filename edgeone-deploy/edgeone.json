@@ -1,0 +1,12 @@
+{
+  "installCommand": "true",
+  "buildCommand": "true",
+  "outputDirectory": "site",
+  "nodeVersion": "22.17.1",
+  "rewrites": [
+    {
+      "source": "/*",
+      "destination": "/index.html"
+    }
+  ]
+}

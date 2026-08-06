@@ -1,0 +1,20 @@
+{
+  "name": "Private Media Archive",
+  "short_name": "PMA",
+  "description": "书影音进度、评分和感想的私人记录。",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#17171c",
+  "theme_color": "#17171c",
+  "icons": [
+    {
+      "src": "pma-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
