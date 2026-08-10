@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   listLocalDeletedEntries,
   listLocalEntries,
@@ -104,9 +105,15 @@ type ThoughtEditForm = {
   quoteMinute: string;
   images: NoteImage[];
   thoughtImages: NoteImage[];
+  rating: number;
 };
 
 type HiddenWebFilter = "all" | Exclude<WebFictionType, "">;
+type CategoryFilter =
+  | `book:${BookCategory}`
+  | "movie"
+  | `series:${SeriesCategory}`
+  | `web:${Exclude<WebFictionType, "">}`;
 
 type LocalUserProfile = {
   name: string;
@@ -724,6 +731,59 @@ function subtypeLabel(entry: Entry) {
   return typeMeta[entry.mediaType].label;
 }
 
+function categoryFilterKey(entry: Entry): CategoryFilter {
+  if (entry.mediaType === "book") {
+    return `book:${entry.bookCategory || "literary"}`;
+  }
+  if (entry.mediaType === "series") {
+    return `series:${entry.seriesCategory || "tv"}`;
+  }
+  return "movie";
+}
+
+function entryMatchesCategoryFilters(
+  entry: Entry,
+  filters: CategoryFilter[],
+) {
+  if (!filters.length) return true;
+  if (entry.mediaType === "book" && entry.bookCategory === "web_fiction") {
+    return (
+      filters.includes("book:web_fiction") ||
+      (entry.webFictionType !== "" &&
+        filters.includes(`web:${entry.webFictionType}`))
+    );
+  }
+  return filters.includes(categoryFilterKey(entry));
+}
+
+const categoryFilterGroups: {
+  label: string;
+  options: { label: string; value: CategoryFilter }[];
+}[] = [
+  {
+    label: "书籍",
+    options: (Object.entries(bookCategoryMeta) as [BookCategory, string][]).map(
+      ([category, label]) => ({
+        label,
+        value: `book:${category}`,
+      }),
+    ),
+  },
+  {
+    label: "电影",
+    options: [{ label: "电影", value: "movie" }],
+  },
+  {
+    label: "剧集",
+    options: (
+      Object.entries(seriesCategoryMeta) as [SeriesCategory, string][]
+    ).map(([category, label]) => ({
+      label,
+      value: `series:${category}`,
+    })),
+  },
+];
+
 function Score({
   value,
   interactive = false,
@@ -998,18 +1058,129 @@ function RecordTable({
   entries,
   loading,
   onOpen,
+  categoryFilters,
+  onToggleCategory,
+  onClearCategories,
 }: {
   entries: Entry[];
   loading: boolean;
   onOpen: (entry: Entry) => void;
+  categoryFilters: CategoryFilter[];
+  onToggleCategory: (category: CategoryFilter) => void;
+  onClearCategories: () => void;
 }) {
+  const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
+  const [categoryMenuPosition, setCategoryMenuPosition] = useState({
+    left: 0,
+    maxHeight: 480,
+    top: 0,
+  });
+  const [webSubmenuPosition, setWebSubmenuPosition] = useState({
+    left: 0,
+    top: 0,
+  });
+  const [submenuOpensLeft, setSubmenuOpensLeft] = useState(false);
+  const categoryTriggerRef = useRef<HTMLButtonElement>(null);
+  const categoryMenuRef = useRef<HTMLDivElement>(null);
+  const webFictionItemRef = useRef<HTMLDivElement>(null);
+
+  function positionCategoryMenu() {
+    const trigger = categoryTriggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const menuWidth = 252;
+    const submenuWidth = 184;
+    const gap = 7;
+    const left = Math.max(
+      8,
+      Math.min(rect.left, window.innerWidth - menuWidth - 8),
+    );
+    const availableBelow = window.innerHeight - rect.bottom - 14;
+    const openAbove = availableBelow < 280 && rect.top > availableBelow;
+    const maxHeight = Math.max(
+      160,
+      Math.min(560, openAbove ? rect.top - 14 : availableBelow),
+    );
+    const top = openAbove
+      ? Math.max(8, rect.top - maxHeight - 6)
+      : rect.bottom + 6;
+    setCategoryMenuPosition({ left, maxHeight, top });
+    setSubmenuOpensLeft(
+      left + menuWidth + gap + submenuWidth > window.innerWidth - 8,
+    );
+  }
+
+  function positionWebSubmenu() {
+    const item = webFictionItemRef.current;
+    if (!item) return;
+    const rect = item.getBoundingClientRect();
+    const submenuWidth = 184;
+    const submenuHeight = 196;
+    setWebSubmenuPosition({
+      left: submenuOpensLeft
+        ? Math.max(8, rect.left - submenuWidth - 4)
+        : Math.min(window.innerWidth - submenuWidth - 8, rect.right + 4),
+      top: Math.max(
+        8,
+        Math.min(rect.top - 7, window.innerHeight - submenuHeight - 8),
+      ),
+    });
+  }
+
+  useEffect(() => {
+    if (!categoryMenuOpen) return;
+    positionCategoryMenu();
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        categoryTriggerRef.current?.contains(target) ||
+        categoryMenuRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setCategoryMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCategoryMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", positionCategoryMenu);
+    window.addEventListener("scroll", positionCategoryMenu, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", positionCategoryMenu);
+      window.removeEventListener("scroll", positionCategoryMenu, true);
+    };
+  }, [categoryMenuOpen]);
+
   return (
-    <div className="table-shell">
+    <>
+      <div className="table-shell">
       <table className="records-table">
         <thead>
           <tr>
             <th><span className="property-icon">Aa</span>名称</th>
-            <th><span className="property-icon">◉</span>分类</th>
+            <th className="category-filter-heading">
+              <button
+                aria-expanded={categoryMenuOpen}
+                className={categoryFilters.length ? "active" : ""}
+                onClick={() => {
+                  if (!categoryMenuOpen) positionCategoryMenu();
+                  setCategoryMenuOpen((open) => !open);
+                }}
+                ref={categoryTriggerRef}
+                type="button"
+              >
+                <span className="property-icon">◉</span>
+                分类
+                {categoryFilters.length > 0 && (
+                  <small>{categoryFilters.length}</small>
+                )}
+                <i aria-hidden="true">⌄</i>
+              </button>
+            </th>
             <th><span className="property-icon">⑩</span>评分</th>
             <th><span className="property-icon">≡</span>作者 / 导演 / 主创</th>
             <th><span className="property-icon">◎</span>国家 / 地区</th>
@@ -1097,7 +1268,124 @@ function RecordTable({
           )}
         </tbody>
       </table>
-    </div>
+      </div>
+      {categoryMenuOpen &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            aria-label="分类筛选"
+            className="category-filter-menu"
+            onScroll={positionWebSubmenu}
+            ref={categoryMenuRef}
+            role="menu"
+            style={categoryMenuPosition}
+          >
+            <div className="category-filter-menu-title">
+              <strong>分类</strong>
+              <span>可多选</span>
+            </div>
+            <button
+              aria-checked={categoryFilters.length === 0}
+              className={`category-filter-menu-item ${
+                categoryFilters.length === 0 ? "active" : ""
+              }`}
+              onClick={onClearCategories}
+              role="menuitemcheckbox"
+              type="button"
+            >
+              <i aria-hidden="true" />
+              <span>全部分类</span>
+            </button>
+            {categoryFilterGroups.map((group) => (
+              <section className="category-filter-menu-section" key={group.label}>
+                <span>{group.label}</span>
+                {group.options.map((option) => {
+                  const active = categoryFilters.includes(option.value);
+                  if (option.value === "book:web_fiction") {
+                    return (
+                      <div
+                        className="category-filter-cascade"
+                        key={option.value}
+                        onFocus={positionWebSubmenu}
+                        onMouseEnter={positionWebSubmenu}
+                        ref={webFictionItemRef}
+                      >
+                        <button
+                          aria-checked={active}
+                          className={`category-filter-menu-item ${
+                            active ? "active" : ""
+                          }`}
+                          onClick={() => onToggleCategory(option.value)}
+                          role="menuitemcheckbox"
+                          type="button"
+                        >
+                          <i aria-hidden="true" />
+                          <span>{option.label}</span>
+                          <b aria-hidden="true">›</b>
+                        </button>
+                        <div
+                          aria-label="网络文学细分类"
+                          className="category-filter-submenu"
+                          role="menu"
+                          style={webSubmenuPosition}
+                        >
+                          <div className="category-filter-menu-title">
+                            <strong>网络文学</strong>
+                            <span>细分类</span>
+                          </div>
+                          {(
+                            Object.entries(webFictionTypeMeta) as [
+                              Exclude<WebFictionType, "">,
+                              string,
+                            ][]
+                          ).map(([type, label]) => {
+                            const value: CategoryFilter = `web:${type}`;
+                            const subtypeActive = categoryFilters.includes(value);
+                            return (
+                              <button
+                                aria-checked={subtypeActive}
+                                className={`category-filter-menu-item ${
+                                  subtypeActive ? "active" : ""
+                                }`}
+                                key={type}
+                                onClick={() => onToggleCategory(value)}
+                                role="menuitemcheckbox"
+                                type="button"
+                              >
+                                <i aria-hidden="true" />
+                                <span>
+                                  {type === "danmei" ? "👬 " : ""}
+                                  {label}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <button
+                      aria-checked={active}
+                      className={`category-filter-menu-item ${
+                        active ? "active" : ""
+                      }`}
+                      key={option.value}
+                      onClick={() => onToggleCategory(option.value)}
+                      role="menuitemcheckbox"
+                      type="button"
+                    >
+                      <i aria-hidden="true" />
+                      <span>{option.label}</span>
+                    </button>
+                  );
+                })}
+              </section>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
@@ -1686,6 +1974,7 @@ export function MediaJournal() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | EntryStatus>("all");
   const [typeFilter, setTypeFilter] = useState<"all" | MediaType>("all");
+  const [categoryFilters, setCategoryFilters] = useState<CategoryFilter[]>([]);
   const [view, setView] = useState<"records" | "calendar" | "insights">(
     "records",
   );
@@ -2008,23 +2297,41 @@ export function MediaJournal() {
         statusFilter === "all" || entry.status === statusFilter;
       const matchesType =
         typeFilter === "all" || entry.mediaType === typeFilter;
+      const matchesCategory =
+        entryMatchesCategoryFilters(entry, categoryFilters);
       const matchesHiddenPreference =
         showHiddenEntries || !entryMatchesHiddenFilter(entry, hiddenWebFilters);
       return (
         matchesSearch &&
         matchesStatus &&
         matchesType &&
+        matchesCategory &&
         matchesHiddenPreference
       );
     });
   }, [
     entries,
+    categoryFilters,
     hiddenWebFilters,
     search,
     showHiddenEntries,
     statusFilter,
     typeFilter,
   ]);
+
+  function toggleCategoryFilter(category: CategoryFilter) {
+    setCategoryFilters((current) => {
+      const withoutOverlappingWebFilters =
+        category === "book:web_fiction"
+          ? current.filter((item) => !item.startsWith("web:"))
+          : category.startsWith("web:")
+            ? current.filter((item) => item !== "book:web_fiction")
+            : current;
+      return withoutOverlappingWebFilters.includes(category)
+        ? withoutOverlappingWebFilters.filter((item) => item !== category)
+        : [...withoutOverlappingWebFilters, category];
+    });
+  }
 
   const settingsHiddenEntryCount = useMemo(
     () =>
@@ -2931,6 +3238,7 @@ export function MediaJournal() {
       quoteMinute: note.quoteMinute ? String(note.quoteMinute) : "",
       images: note.images,
       thoughtImages: note.thoughtImages,
+      rating: selected?.rating || 0,
     });
   }
 
@@ -3026,7 +3334,12 @@ export function MediaJournal() {
                 status === "completed"
                   ? selected.completedAt || activeThought.watchedAt
                   : "",
-              rating: status === "completed" ? selected.rating : null,
+              rating:
+                status === "completed" &&
+                thoughtEditForm.rating >= 1 &&
+                thoughtEditForm.rating <= 10
+                  ? thoughtEditForm.rating
+                  : null,
             }
           : {}),
         updatedAt: new Date().toISOString(),
@@ -3210,12 +3523,16 @@ export function MediaJournal() {
                       ? `${filteredEntries.length} 条`
                       : `${statusMeta[statusFilter]} · ${filteredEntries.length} 条`}
                   </span>
-                  {(search || statusFilter !== "all" || typeFilter !== "all") && (
+                  {(search ||
+                    statusFilter !== "all" ||
+                    typeFilter !== "all" ||
+                    categoryFilters.length > 0) && (
                     <button
                       onClick={() => {
                         setSearch("");
                         setStatusFilter("all");
                         setTypeFilter("all");
+                        setCategoryFilters([]);
                       }}
                       type="button"
                     >
@@ -3251,9 +3568,12 @@ export function MediaJournal() {
 
               {filteredEntries.length || loading ? (
                 <RecordTable
+                  categoryFilters={categoryFilters}
                   entries={filteredEntries}
                   loading={loading}
+                  onClearCategories={() => setCategoryFilters([])}
                   onOpen={openDetails}
+                  onToggleCategory={toggleCategoryFilter}
                 />
               ) : (
                 <div className="empty-table">
@@ -3271,6 +3591,7 @@ export function MediaJournal() {
                         setSearch("");
                         setStatusFilter("all");
                         setTypeFilter("all");
+                        setCategoryFilters([]);
                       }}
                       type="button"
                     >
@@ -4930,6 +5251,24 @@ export function MediaJournal() {
                     <ProgressBar percent={thoughtEditProgress} />
                   </section>
                 )}
+                {selected.notes[0]?.id === activeThought.id &&
+                  thoughtEditProgress === 100 && (
+                    <div className="rating-field thought-rating-editor">
+                      <span>完成评分</span>
+                      <Score
+                        interactive
+                        onChange={(rating) =>
+                          setThoughtEditForm({ ...thoughtEditForm, rating })
+                        }
+                        value={thoughtEditForm.rating}
+                      />
+                      <small>
+                        {thoughtEditForm.rating
+                          ? `${thoughtEditForm.rating} / 10`
+                          : "暂不评分"}
+                      </small>
+                    </div>
+                  )}
                 <ThoughtComposer
                   images={thoughtEditForm.images}
                   mediaType={selected.mediaType}
@@ -4967,6 +5306,14 @@ export function MediaJournal() {
               </form>
             ) : (
               <>
+                {selected.notes[0]?.id === activeThought.id &&
+                  activeThought.status === "completed" &&
+                  selected.rating && (
+                    <div className="thought-rating-summary">
+                      <span>完成评分</span>
+                      <Score value={selected.rating} />
+                    </div>
+                  )}
                 <ThoughtBody
                   mediaType={selected.mediaType}
                   note={activeThought}

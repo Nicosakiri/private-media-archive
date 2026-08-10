@@ -1115,6 +1115,201 @@ select:focus-visible {
   border-right: 0;
 }
 
+.category-filter-heading {
+  padding: 0 !important;
+}
+
+.category-filter-heading > button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  border: 0;
+  padding: 10px 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.category-filter-heading > button:hover,
+.category-filter-heading > button.active {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.category-filter-heading > button small {
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  margin-left: 5px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 8px;
+}
+
+.category-filter-heading > button > i {
+  margin-left: auto;
+  color: var(--muted);
+  font-style: normal;
+}
+
+.category-filter-menu,
+.category-filter-submenu {
+  position: fixed;
+  z-index: 95;
+  width: 252px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  padding: 6px;
+  background: var(--card);
+  box-shadow: 0 16px 46px rgba(0, 0, 0, 0.22), 0 2px 8px var(--shadow);
+  color: var(--ink);
+}
+
+.category-filter-menu {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.category-filter-menu::-webkit-scrollbar {
+  width: 7px;
+}
+
+.category-filter-menu::-webkit-scrollbar-thumb {
+  border: 2px solid var(--card);
+  border-radius: 7px;
+  background: var(--line-strong);
+}
+
+.category-filter-menu-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 9px 6px;
+}
+
+.category-filter-menu-title strong {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.category-filter-menu-title span,
+.category-filter-menu-section > span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.category-filter-menu-section {
+  display: grid;
+  gap: 1px;
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 4px;
+}
+
+.category-filter-menu-section > span {
+  padding: 6px 9px 3px;
+  font-weight: 650;
+}
+
+.category-filter-menu-item {
+  display: grid;
+  width: 100%;
+  min-height: 32px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 10px;
+  text-align: left;
+}
+
+.category-filter-menu-item:hover,
+.category-filter-menu-item:focus-visible {
+  background: var(--hover);
+  outline: 0;
+}
+
+.category-filter-menu-item > i {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--paper);
+}
+
+.category-filter-menu-item.active > i {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.category-filter-menu-item.active > i::after {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  width: 3px;
+  height: 6px;
+  border-right: 1.5px solid var(--accent-contrast);
+  border-bottom: 1.5px solid var(--accent-contrast);
+  content: "";
+  transform: rotate(45deg);
+}
+
+.category-filter-menu-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-filter-menu-item > b {
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.category-filter-cascade {
+  position: relative;
+}
+
+.category-filter-submenu {
+  position: fixed;
+  width: 184px;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-3px);
+  transition: opacity 90ms ease, transform 90ms ease, visibility 90ms ease;
+}
+
+.category-filter-submenu::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -8px;
+  width: 8px;
+  content: "";
+}
+
+.category-filter-cascade:hover .category-filter-submenu,
+.category-filter-cascade:focus-within .category-filter-submenu {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+
 .property-icon {
   display: inline-block;
   min-width: 18px;
@@ -3775,6 +3970,28 @@ select:focus-visible {
 .thought-detail-modal .thought-reference p {
   font-size: 14px;
   line-height: 1.8;
+}
+
+.thought-rating-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 0 0 22px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--field);
+}
+
+.thought-rating-summary > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.thought-rating-editor {
+  margin-top: 16px;
 }
 
 .thought-detail-actions {
