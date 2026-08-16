@@ -30,7 +30,6 @@ import {
   seriesCategoryMeta,
   statusMeta,
   typeMeta,
-  webFictionTypeMeta,
 } from "./media-types";
 import type {
   BookCategory,
@@ -108,12 +107,11 @@ type ThoughtEditForm = {
   rating: number;
 };
 
-type HiddenWebFilter = "all" | Exclude<WebFictionType, "">;
+type ArchiveArea = "main" | "romance";
 type CategoryFilter =
   | `book:${BookCategory}`
   | "movie"
-  | `series:${SeriesCategory}`
-  | `web:${Exclude<WebFictionType, "">}`;
+  | `series:${SeriesCategory}`;
 
 type LocalUserProfile = {
   name: string;
@@ -125,8 +123,6 @@ const defaultUserProfile: LocalUserProfile = {
   avatar: "nicosakiri-avatar.png",
 };
 
-const defaultHiddenWebFilters: HiddenWebFilter[] = ["all"];
-const HIDDEN_WEB_FILTERS_KEY = "pma-hidden-web-filters";
 const USER_PROFILE_KEY = "pma-local-user-profile";
 const DEVICE_ID_KEY = "pma-device-id";
 
@@ -258,6 +254,15 @@ function recalculateHistoricalNote(
     | "totalVolumes"
   >,
 ) {
+  if (note.status === "completed" && note.progressPercent === 100) {
+    return {
+      ...note,
+      progressText: "已看完",
+      progressPercent: 100,
+      status: "completed" as const,
+    };
+  }
+
   const isLightNovel =
     entry.mediaType === "book" && entry.bookCategory === "light_novel";
   const isManga =
@@ -323,13 +328,11 @@ function recalculateHistoricalNote(
   };
 }
 
-function entryMatchesHiddenFilter(
-  entry: Entry,
-  filters: HiddenWebFilter[],
-) {
-  if (entry.bookCategory !== "web_fiction") return false;
-  return filters.includes("all") ||
-    (entry.webFictionType !== "" && filters.includes(entry.webFictionType));
+function isRomanceArchiveEntry(entry: Entry) {
+  return (
+    entry.bookCategory === "web_fiction" &&
+    (entry.webFictionType === "bg" || entry.webFictionType === "danmei")
+  );
 }
 
 function doubanSearchNoun(mediaType: MediaType) {
@@ -379,7 +382,7 @@ function viewingRecordForm(entry: Entry): ViewingRecordForm {
     quoteMinute: "",
     images: [],
     thoughtImages: [],
-    status: entry.status === "abandoned" ? "in_progress" : entry.status,
+    status: "in_progress",
     rating: entry.rating || 0,
     danmeiTags: entry.danmeiTags.join("、"),
   };
@@ -718,7 +721,18 @@ async function localizePoster(url: string) {
   });
 }
 
-function subtypeLabel(entry: Entry) {
+function romanceTypeLabel(type: WebFictionType) {
+  return type === "danmei" ? "耽美" : type === "bg" ? "言情" : "网络文学";
+}
+
+function subtypeLabel(entry: Entry, area: ArchiveArea = "main") {
+  if (
+    area === "romance" &&
+    entry.mediaType === "book" &&
+    entry.bookCategory === "web_fiction"
+  ) {
+    return romanceTypeLabel(entry.webFictionType);
+  }
   if (entry.mediaType === "book" && entry.bookCategory) {
     return bookCategoryMeta[entry.bookCategory];
   }
@@ -746,13 +760,6 @@ function entryMatchesCategoryFilters(
   filters: CategoryFilter[],
 ) {
   if (!filters.length) return true;
-  if (entry.mediaType === "book" && entry.bookCategory === "web_fiction") {
-    return (
-      filters.includes("book:web_fiction") ||
-      (entry.webFictionType !== "" &&
-        filters.includes(`web:${entry.webFictionType}`))
-    );
-  }
   return filters.includes(categoryFilterKey(entry));
 }
 
@@ -850,17 +857,30 @@ function ProgressBar({
 
 const countryAliases: Record<string, string> = {
   中国大陆: "中国",
-  中国香港: "中国",
-  中国台湾: "中国",
-  香港: "中国",
-  台湾: "中国",
+  中国内地: "中国",
+  内地: "中国",
+  大陆: "中国",
+  中华人民共和国: "中国",
+  中国: "中国",
+  中国香港: "香港",
+  香港特别行政区: "香港",
+  香港: "香港",
+  中国台湾: "台湾",
+  中华民国: "台湾",
+  台湾: "台湾",
+  中国澳门: "澳门",
+  澳门特别行政区: "澳门",
+  澳门: "澳门",
   美国: "美国",
   美利坚合众国: "美国",
   英国: "英国",
+  大不列颠及北爱尔兰联合王国: "英国",
   英格兰: "英国",
   俄罗斯: "俄罗斯",
+  俄罗斯联邦: "俄罗斯",
   俄国: "俄罗斯",
   韩国: "韩国",
+  大韩民国: "韩国",
   南韩: "韩国",
   日本: "日本",
   法国: "法国",
@@ -878,6 +898,7 @@ const countryAliases: Record<string, string> = {
   澳洲: "澳大利亚",
   新西兰: "新西兰",
   朝鲜: "朝鲜",
+  朝鲜民主主义人民共和国: "朝鲜",
   北韩: "朝鲜",
   越南: "越南",
   泰国: "泰国",
@@ -898,7 +919,9 @@ const countryAliases: Record<string, string> = {
 };
 
 function normalizeCountryName(value: string) {
-  return countryAliases[value.trim()] || value.trim();
+  const country = value.trim();
+  const withoutRegionSuffix = country.replace(/地区$/, "");
+  return countryAliases[country] || countryAliases[withoutRegionSuffix] || country;
 }
 
 function countryKeys(value: string) {
@@ -957,14 +980,27 @@ function featurePath(feature: WorldFeature) {
 
 function mapFill(count: number, maxCount: number) {
   if (!count) return "var(--map-empty)";
-  const strength = 0.24 + (count / maxCount) * 0.76;
-  const start = [183, 176, 218];
-  const end = [91, 72, 183];
+  const strength = 0.12 + (count / maxCount) * 0.88;
+  const start = [40, 82, 132];
+  const end = [151, 211, 255];
   const rgb = start.map((channel, index) =>
     Math.round(channel + (end[index] - channel) * strength),
   );
   return `rgb(${rgb.join(",")})`;
 }
+
+const specialRegionMarkers = [
+  {
+    name: "香港",
+    coordinates: [114.1694, 22.3193] as [number, number],
+    radius: [2.4, 1.8] as [number, number],
+  },
+  {
+    name: "澳门",
+    coordinates: [113.5439, 22.1987] as [number, number],
+    radius: [2, 1.6] as [number, number],
+  },
+];
 
 function WorldHeatMap({ counts }: { counts: Record<string, number> }) {
   const [features, setFeatures] = useState<WorldFeature[]>([]);
@@ -993,7 +1029,12 @@ function WorldHeatMap({ counts }: { counts: Record<string, number> }) {
 
   const maxCount = Math.max(1, ...Object.values(counts));
   const mappedKeys = new Set(
-    features.map((feature) => normalizeCountryName(feature.properties.name)),
+    [
+      ...features.map((feature) =>
+        normalizeCountryName(feature.properties.name),
+      ),
+      ...specialRegionMarkers.map((region) => region.name),
+    ],
   );
   const unmapped = Object.entries(counts)
     .filter(([country]) => country !== "未记录" && !mappedKeys.has(country))
@@ -1037,6 +1078,33 @@ function WorldHeatMap({ counts }: { counts: Record<string, number> }) {
                 </path>
               );
             })}
+            {specialRegionMarkers.map((region) => {
+              const [markerX, markerY] = projectedPoint(region.coordinates);
+              const count = counts[region.name] || 0;
+              return (
+                <g
+                  aria-label={`${region.name}：${count} 部作品`}
+                  className={`world-map-region-marker ${count ? "active" : ""}`}
+                  key={region.name}
+                  onBlur={() => setHovered(null)}
+                  onFocus={() => setHovered({ name: region.name, count })}
+                  onMouseEnter={() => setHovered({ name: region.name, count })}
+                  onMouseLeave={() => setHovered(null)}
+                  role="img"
+                  tabIndex={0}
+                >
+                  <ellipse
+                    className="region-outline"
+                    cx={markerX}
+                    cy={markerY}
+                    fill={mapFill(count, maxCount)}
+                    rx={region.radius[0]}
+                    ry={region.radius[1]}
+                  />
+                  <title>{region.name}：{count} 部作品</title>
+                </g>
+              );
+            })}
           </svg>
         )}
       </div>
@@ -1058,6 +1126,7 @@ function RecordTable({
   entries,
   loading,
   onOpen,
+  area,
   categoryFilters,
   onToggleCategory,
   onClearCategories,
@@ -1065,6 +1134,7 @@ function RecordTable({
   entries: Entry[];
   loading: boolean;
   onOpen: (entry: Entry) => void;
+  area: ArchiveArea;
   categoryFilters: CategoryFilter[];
   onToggleCategory: (category: CategoryFilter) => void;
   onClearCategories: () => void;
@@ -1075,22 +1145,28 @@ function RecordTable({
     maxHeight: 480,
     top: 0,
   });
-  const [webSubmenuPosition, setWebSubmenuPosition] = useState({
-    left: 0,
-    top: 0,
-  });
-  const [submenuOpensLeft, setSubmenuOpensLeft] = useState(false);
   const categoryTriggerRef = useRef<HTMLButtonElement>(null);
   const categoryMenuRef = useRef<HTMLDivElement>(null);
-  const webFictionItemRef = useRef<HTMLDivElement>(null);
+  const visibleCategoryGroups =
+    area === "romance"
+      ? [
+          {
+            label: "书籍",
+            options: [
+              {
+                label: "网络文学",
+                value: "book:web_fiction" as CategoryFilter,
+              },
+            ],
+          },
+        ]
+      : categoryFilterGroups;
 
   function positionCategoryMenu() {
     const trigger = categoryTriggerRef.current;
     if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
     const menuWidth = 252;
-    const submenuWidth = 184;
-    const gap = 7;
     const left = Math.max(
       8,
       Math.min(rect.left, window.innerWidth - menuWidth - 8),
@@ -1105,26 +1181,6 @@ function RecordTable({
       ? Math.max(8, rect.top - maxHeight - 6)
       : rect.bottom + 6;
     setCategoryMenuPosition({ left, maxHeight, top });
-    setSubmenuOpensLeft(
-      left + menuWidth + gap + submenuWidth > window.innerWidth - 8,
-    );
-  }
-
-  function positionWebSubmenu() {
-    const item = webFictionItemRef.current;
-    if (!item) return;
-    const rect = item.getBoundingClientRect();
-    const submenuWidth = 184;
-    const submenuHeight = 196;
-    setWebSubmenuPosition({
-      left: submenuOpensLeft
-        ? Math.max(8, rect.left - submenuWidth - 4)
-        : Math.min(window.innerWidth - submenuWidth - 8, rect.right + 4),
-      top: Math.max(
-        8,
-        Math.min(rect.top - 7, window.innerHeight - submenuHeight - 8),
-      ),
-    });
   }
 
   useEffect(() => {
@@ -1242,7 +1298,7 @@ function RecordTable({
                 </td>
                 <td>
                   <span className={`type-pill type-${entry.mediaType}`}>
-                    {subtypeLabel(entry)}
+                    {subtypeLabel(entry, area)}
                   </span>
                 </td>
                 <td className="rating-cell">
@@ -1275,7 +1331,6 @@ function RecordTable({
           <div
             aria-label="分类筛选"
             className="category-filter-menu"
-            onScroll={positionWebSubmenu}
             ref={categoryMenuRef}
             role="menu"
             style={categoryMenuPosition}
@@ -1296,74 +1351,11 @@ function RecordTable({
               <i aria-hidden="true" />
               <span>全部分类</span>
             </button>
-            {categoryFilterGroups.map((group) => (
+            {visibleCategoryGroups.map((group) => (
               <section className="category-filter-menu-section" key={group.label}>
                 <span>{group.label}</span>
                 {group.options.map((option) => {
                   const active = categoryFilters.includes(option.value);
-                  if (option.value === "book:web_fiction") {
-                    return (
-                      <div
-                        className="category-filter-cascade"
-                        key={option.value}
-                        onFocus={positionWebSubmenu}
-                        onMouseEnter={positionWebSubmenu}
-                        ref={webFictionItemRef}
-                      >
-                        <button
-                          aria-checked={active}
-                          className={`category-filter-menu-item ${
-                            active ? "active" : ""
-                          }`}
-                          onClick={() => onToggleCategory(option.value)}
-                          role="menuitemcheckbox"
-                          type="button"
-                        >
-                          <i aria-hidden="true" />
-                          <span>{option.label}</span>
-                          <b aria-hidden="true">›</b>
-                        </button>
-                        <div
-                          aria-label="网络文学细分类"
-                          className="category-filter-submenu"
-                          role="menu"
-                          style={webSubmenuPosition}
-                        >
-                          <div className="category-filter-menu-title">
-                            <strong>网络文学</strong>
-                            <span>细分类</span>
-                          </div>
-                          {(
-                            Object.entries(webFictionTypeMeta) as [
-                              Exclude<WebFictionType, "">,
-                              string,
-                            ][]
-                          ).map(([type, label]) => {
-                            const value: CategoryFilter = `web:${type}`;
-                            const subtypeActive = categoryFilters.includes(value);
-                            return (
-                              <button
-                                aria-checked={subtypeActive}
-                                className={`category-filter-menu-item ${
-                                  subtypeActive ? "active" : ""
-                                }`}
-                                key={type}
-                                onClick={() => onToggleCategory(value)}
-                                role="menuitemcheckbox"
-                                type="button"
-                              >
-                                <i aria-hidden="true" />
-                                <span>
-                                  {type === "danmei" ? "👬 " : ""}
-                                  {label}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  }
                   return (
                     <button
                       aria-checked={active}
@@ -1389,22 +1381,18 @@ function RecordTable({
   );
 }
 
-function InsightsPanel({ entries }: { entries: Entry[] }) {
+function InsightsPanel({
+  entries,
+  area,
+}: {
+  entries: Entry[];
+  area: ArchiveArea;
+}) {
   type ChartDatum = { label: string; count: number; color?: string };
   type Chart = "primary" | "secondary" | "ratings";
-  const [scope, setScope] = useState<"media" | "web">("media");
-  const [webArea, setWebArea] = useState<"danmei" | "other">("danmei");
   const [chart, setChart] = useState<Chart>("primary");
-  const scopedEntries =
-    scope === "web"
-      ? entries.filter(
-          (entry) =>
-            entry.bookCategory === "web_fiction" &&
-            (webArea === "danmei"
-              ? entry.webFictionType === "danmei"
-              : entry.webFictionType !== "danmei"),
-        )
-      : entries.filter((entry) => entry.bookCategory !== "web_fiction");
+  const romanceArea = area === "romance";
+  const scopedEntries = entries;
   const completed = scopedEntries.filter(
     (entry) => entry.status === "completed",
   );
@@ -1450,6 +1438,13 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
       color: "#8f7aaa",
     },
     {
+      label: "网络文学",
+      count: scopedEntries.filter(
+        (entry) => entry.bookCategory === "web_fiction",
+      ).length,
+      color: "#6f8fb7",
+    },
+    {
       label: "电影",
       count: scopedEntries.filter((entry) => entry.mediaType === "movie")
         .length,
@@ -1480,6 +1475,18 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
       color: "var(--media-variety)",
     },
   ];
+  const romanceTypeCounts: ChartDatum[] = [
+    {
+      label: "言情",
+      count: scopedEntries.filter((entry) => entry.webFictionType === "bg").length,
+      color: "#8fb9e8",
+    },
+    {
+      label: "耽美",
+      count: scopedEntries.filter((entry) => entry.webFictionType === "danmei").length,
+      color: "#b9d9f6",
+    },
+  ];
 
   const countryMap = scopedEntries.reduce<Record<string, number>>(
     (result, entry) => {
@@ -1508,17 +1515,6 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
     .map(([label, count]) => ({ label, count, color: "var(--media-book)" }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 8);
-  const statusCounts: ChartDatum[] = (
-    [
-      ["进行中", "in_progress", "var(--progress-blue)"],
-      ["已看完", "completed", "var(--progress-green)"],
-      ["已弃", "abandoned", "#e05252"],
-    ] as const
-  ).map(([label, status, color]) => ({
-    label,
-    color,
-    count: scopedEntries.filter((entry) => entry.status === status).length,
-  }));
   const danmeiTagMap = completed.reduce<Record<string, number>>(
     (result, entry) => {
       entry.danmeiTags.forEach((tag) => {
@@ -1539,47 +1535,34 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
   const activeData =
     chart === "ratings"
       ? ratingCounts
-      : scope === "web"
-        ? chart === "primary"
+      : chart === "primary"
+        ? romanceArea
+          ? romanceTypeCounts
+          : typeCounts
+        : romanceArea
           ? platformCounts
-          : webArea === "danmei"
-            ? danmeiTagCounts
-            : statusCounts
-        : chart === "primary"
-          ? typeCounts
           : countryCounts;
   const chartTitle =
     chart === "ratings"
       ? "评分分布"
-      : scope === "web"
-        ? chart === "primary"
+      : chart === "primary"
+        ? romanceArea
+          ? "言情 / 耽美构成"
+          : "类型分布"
+        : romanceArea
           ? "阅读平台分布"
-          : webArea === "danmei"
-            ? "耽美题材标签"
-            : "完成状态分布"
-        : chart === "primary"
-          ? "类型分布"
           : "国家 / 地区分布";
   const maxCount = Math.max(1, ...activeData.map((item) => item.count));
-  const favoriteType = [...typeCounts].sort((a, b) => b.count - a.count)[0];
+  const favoriteType = [...(romanceArea ? romanceTypeCounts : typeCounts)].sort(
+    (a, b) => b.count - a.count,
+  )[0];
   const topCountry = countryCounts.find((item) => item.label !== "未记录");
   const topPlatform = platformCounts.find((item) => item.label !== "未记录");
   const topDanmeiTag = danmeiTagCounts[0];
-  const topStatus = [...statusCounts].sort((a, b) => b.count - a.count)[0];
   const thoughtCount = scopedEntries.reduce(
     (sum, entry) => sum + entry.notes.filter(noteHasThought).length,
     0,
   );
-
-  function changeScope(nextScope: "media" | "web") {
-    setScope(nextScope);
-    setChart("primary");
-  }
-
-  function changeWebArea(nextArea: "danmei" | "other") {
-    setWebArea(nextArea);
-    setChart("primary");
-  }
 
   return (
     <section className="insights-page">
@@ -1587,54 +1570,16 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
         <span className="date-kicker">LOCAL STATISTICS</span>
         <h1>统计</h1>
         <p>
-          {scope === "web"
-            ? "网络小说单独统计，不计入书影音数据。"
-            : "网络小说已从这里排除，按类型、国家与评分查看书影音记录。"}
+          {romanceArea
+            ? "这里只统计独立书架中的言情与耽美。"
+            : "按类型、国家与评分查看当前主书架中的记录。"}
         </p>
-        <div className="insight-scope-tabs" aria-label="统计范围">
-          <button
-            className={scope === "media" ? "active" : ""}
-            onClick={() => changeScope("media")}
-            type="button"
-          >
-            书影音统计
-          </button>
-          <button
-            className={scope === "web" ? "active" : ""}
-            onClick={() => changeScope("web")}
-            type="button"
-          >
-            网络小说统计
-          </button>
-        </div>
-        {scope === "web" && (
-          <div className="web-insight-tabs" aria-label="网络小说统计分区">
-            <button
-              className={webArea === "danmei" ? "active" : ""}
-              onClick={() => changeWebArea("danmei")}
-              type="button"
-            >
-              👬 耽美
-            </button>
-            <button
-              className={webArea === "other" ? "active" : ""}
-              onClick={() => changeWebArea("other")}
-              type="button"
-            >
-              其他网文
-            </button>
-          </div>
-        )}
       </div>
 
       <div className="insight-summary">
         <div>
           <span>
-            {scope === "web"
-              ? webArea === "danmei"
-                ? "耽美小说"
-                : "其他网文"
-              : "书影音记录"}
+            {romanceArea ? "言情与耽美" : "主书架记录"}
           </span>
           <strong>{scopedEntries.length}</strong>
           <small>部作品</small>
@@ -1672,18 +1617,14 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
               onClick={() => setChart("primary")}
               type="button"
             >
-              {scope === "web" ? "阅读平台" : "类型构成"}
+              {romanceArea ? "言情 / 耽美" : "类型构成"}
             </button>
             <button
               className={chart === "secondary" ? "active" : ""}
               onClick={() => setChart("secondary")}
               type="button"
             >
-              {scope === "web"
-                ? webArea === "danmei"
-                  ? "题材标签"
-                  : "完成状态"
-                : "国家 / 地区"}
+              {romanceArea ? "阅读平台" : "国家 / 地区"}
             </button>
             <button
               className={chart === "ratings" ? "active" : ""}
@@ -1695,7 +1636,7 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
           </div>
         </div>
 
-        {scopedEntries.length && scope === "media" && chart === "secondary" ? (
+        {scopedEntries.length && !romanceArea && chart === "secondary" ? (
           <WorldHeatMap counts={countryMap} />
         ) : scopedEntries.length ? (
           <div className={`bar-chart chart-${chart}`}>
@@ -1726,9 +1667,9 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
               ))}
             </div>
             <p>
-              {scope === "web"
-                ? "添加网络小说后，这里会自动生成统计图。"
-                : "添加书影音记录后，这里会自动生成统计图。"}
+              {romanceArea
+                ? "添加言情或耽美小说后，这里会自动生成统计图。"
+                : "添加记录后，这里会自动生成统计图。"}
             </p>
           </div>
         )}
@@ -1736,52 +1677,28 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
 
       <div className="insight-notes">
         <article>
-          <span>
-            {scope === "web" ? "最常用的平台" : "最常看的类型"}
-          </span>
+          <span>{romanceArea ? "记录最多的分类" : "最常看的类型"}</span>
           <strong>
-            {scope === "web"
-              ? topPlatform?.label || "暂无"
-              : favoriteType?.count
-                ? favoriteType.label
-                : "暂无"}
+            {favoriteType?.count ? favoriteType.label : "暂无"}
           </strong>
           <p>
-            {scope === "web"
-              ? topPlatform
-                ? `共 ${topPlatform.count} 部来自这个平台。`
-                : "填写阅读平台后自动汇总。"
-              : favoriteType?.count
-                ? `共 ${favoriteType.count} 部，占当前记录最多。`
-                : "添加记录后自动计算。"}
+            {favoriteType?.count
+              ? `共 ${favoriteType.count} 部，占当前记录最多。`
+              : "添加记录后自动计算。"}
           </p>
         </article>
         <article>
-          <span>
-            {scope === "web"
-              ? webArea === "danmei"
-                ? "最常见的耽美题材"
-                : "最常见的阅读状态"
-              : "记录最多的国家 / 地区"}
-          </span>
+          <span>{romanceArea ? "最常用的平台" : "记录最多的国家 / 地区"}</span>
           <strong>
-            {scope === "web"
-              ? webArea === "danmei"
-                ? topDanmeiTag?.label || "暂无"
-                : topStatus?.count
-                  ? topStatus.label
-                  : "暂无"
+            {romanceArea
+              ? topPlatform?.label || "暂无"
               : topCountry?.label || "暂无"}
           </strong>
           <p>
-            {scope === "web"
-              ? webArea === "danmei"
-                ? topDanmeiTag
-                  ? `在已完成作品中出现 ${topDanmeiTag.count} 次。`
-                  : "小说完成时填写题材标签后自动统计。"
-                : topStatus?.count
-                  ? `共 ${topStatus.count} 部。`
-                  : "添加网络小说后自动计算。"
+            {romanceArea
+              ? topPlatform
+                ? `共 ${topPlatform.count} 部来自这个平台。`
+                : "填写阅读平台后自动汇总。"
               : topCountry
                 ? `共 ${topCountry.count} 部。`
                 : "填写国家或地区后自动汇总。"}
@@ -1804,6 +1721,17 @@ function InsightsPanel({ entries }: { entries: Entry[] }) {
               : "完成作品并给出 1–10 分后自动统计。"}
           </p>
         </article>
+        {romanceArea && (
+          <article>
+            <span>最常见的耽美题材</span>
+            <strong>{topDanmeiTag?.label || "暂无"}</strong>
+            <p>
+              {topDanmeiTag
+                ? `在已完成作品中出现 ${topDanmeiTag.count} 次。`
+                : "完成耽美小说时填写题材标签后自动统计。"}
+            </p>
+          </article>
+        )}
       </div>
     </section>
   );
@@ -1975,6 +1903,7 @@ export function MediaJournal() {
   const [statusFilter, setStatusFilter] = useState<"all" | EntryStatus>("all");
   const [typeFilter, setTypeFilter] = useState<"all" | MediaType>("all");
   const [categoryFilters, setCategoryFilters] = useState<CategoryFilter[]>([]);
+  const [archiveArea, setArchiveArea] = useState<ArchiveArea>("main");
   const [view, setView] = useState<"records" | "calendar" | "insights">(
     "records",
   );
@@ -2001,18 +1930,10 @@ export function MediaJournal() {
   >([]);
   const [movieLookupMessage, setMovieLookupMessage] = useState("");
   const [movieLookupLoading, setMovieLookupLoading] = useState(false);
-  const [showHiddenEntries, setShowHiddenEntries] = useState(false);
-  const [hiddenWebFilters, setHiddenWebFilters] = useState<HiddenWebFilter[]>(
-    defaultHiddenWebFilters,
-  );
   const [userProfile, setUserProfile] = useState<LocalUserProfile>(
     defaultUserProfile,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsHiddenDraft, setSettingsHiddenDraft] = useState<
-    HiddenWebFilter[]
-  >(defaultHiddenWebFilters);
-  const [settingsShowHiddenDraft, setSettingsShowHiddenDraft] = useState(false);
   const [settingsProfileDraft, setSettingsProfileDraft] =
     useState<LocalUserProfile>(defaultUserProfile);
   const [syncOpen, setSyncOpen] = useState(false);
@@ -2050,8 +1971,8 @@ export function MediaJournal() {
       deletedEntries: await listLocalDeletedEntries(),
       preferences: {
         theme,
-        hiddenWebFilters,
-        showHiddenEntries,
+        hiddenWebFilters: [],
+        showHiddenEntries: false,
         userProfile,
       },
     };
@@ -2059,27 +1980,14 @@ export function MediaJournal() {
 
   async function applyLocalArchive(archive: LocalArchive) {
     await replaceLocalArchive(archive.entries, archive.deletedEntries);
-    const allowedFilters = new Set<HiddenWebFilter>([
-      "all",
-      "bg",
-      "danmei",
-      "gen",
-      "other",
-    ]);
-    const nextFilters = archive.preferences.hiddenWebFilters.filter(
-      (item): item is HiddenWebFilter => allowedFilters.has(item as HiddenWebFilter),
-    );
     const nextProfile = {
       name: archive.preferences.userProfile.name?.trim() || defaultUserProfile.name,
       avatar: archive.preferences.userProfile.avatar || defaultUserProfile.avatar,
     };
     setTheme(archive.preferences.theme);
     document.documentElement.dataset.theme = archive.preferences.theme;
-    setHiddenWebFilters(nextFilters);
-    setShowHiddenEntries(Boolean(archive.preferences.showHiddenEntries));
     setUserProfile(nextProfile);
     window.localStorage.setItem("liuhen-theme", archive.preferences.theme);
-    window.localStorage.setItem(HIDDEN_WEB_FILTERS_KEY, JSON.stringify(nextFilters));
     window.localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(nextProfile));
     setSelected(null);
     await loadEntries();
@@ -2190,15 +2098,6 @@ export function MediaJournal() {
     document.documentElement.dataset.theme = preferred;
 
     try {
-      const savedFilters = JSON.parse(
-        window.localStorage.getItem(HIDDEN_WEB_FILTERS_KEY) || "null",
-      ) as HiddenWebFilter[] | null;
-      if (Array.isArray(savedFilters)) setHiddenWebFilters(savedFilters);
-    } catch {
-      setHiddenWebFilters(defaultHiddenWebFilters);
-    }
-
-    try {
       const savedProfile = JSON.parse(
         window.localStorage.getItem(USER_PROFILE_KEY) || "null",
       ) as Partial<LocalUserProfile> | null;
@@ -2220,21 +2119,19 @@ export function MediaJournal() {
     window.localStorage.setItem("liuhen-theme", next);
   }
 
-  function openSettings() {
-    setSettingsHiddenDraft(hiddenWebFilters);
-    setSettingsShowHiddenDraft(showHiddenEntries);
-    setSettingsProfileDraft(userProfile);
-    setSettingsOpen(true);
+  function switchArchiveArea(nextArea: ArchiveArea) {
+    setArchiveArea(nextArea);
+    setView("records");
+    setSearch("");
+    setStatusFilter("all");
+    setTypeFilter("all");
+    setCategoryFilters([]);
+    setSelected(null);
   }
 
-  function toggleHiddenFilter(filter: HiddenWebFilter) {
-    setSettingsHiddenDraft((current) => {
-      if (filter === "all") return current.includes("all") ? [] : ["all"];
-      const withoutAll = current.filter((item) => item !== "all");
-      return withoutAll.includes(filter)
-        ? withoutAll.filter((item) => item !== filter)
-        : [...withoutAll, filter];
-    });
+  function openSettings() {
+    setSettingsProfileDraft(userProfile);
+    setSettingsOpen(true);
   }
 
   function uploadUserAvatar(event: ChangeEvent<HTMLInputElement>) {
@@ -2270,20 +2167,24 @@ export function MediaJournal() {
       name: settingsProfileDraft.name.trim() || defaultUserProfile.name,
       avatar: settingsProfileDraft.avatar || defaultUserProfile.avatar,
     };
-    setHiddenWebFilters(settingsHiddenDraft);
     setUserProfile(nextProfile);
-    setShowHiddenEntries(settingsShowHiddenDraft);
-    window.localStorage.setItem(
-      HIDDEN_WEB_FILTERS_KEY,
-      JSON.stringify(settingsHiddenDraft),
-    );
     window.localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(nextProfile));
     setSettingsOpen(false);
   }
 
+  const areaEntries = useMemo(
+    () =>
+      entries.filter((entry) =>
+        archiveArea === "romance"
+          ? isRomanceArchiveEntry(entry)
+          : !isRomanceArchiveEntry(entry),
+      ),
+    [archiveArea, entries],
+  );
+
   const filteredEntries = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    return entries.filter((entry) => {
+    return areaEntries.filter((entry) => {
       const matchesSearch =
         !keyword ||
         entry.title.toLowerCase().includes(keyword) ||
@@ -2299,57 +2200,30 @@ export function MediaJournal() {
         typeFilter === "all" || entry.mediaType === typeFilter;
       const matchesCategory =
         entryMatchesCategoryFilters(entry, categoryFilters);
-      const matchesHiddenPreference =
-        showHiddenEntries || !entryMatchesHiddenFilter(entry, hiddenWebFilters);
       return (
         matchesSearch &&
         matchesStatus &&
         matchesType &&
-        matchesCategory &&
-        matchesHiddenPreference
+        matchesCategory
       );
     });
   }, [
-    entries,
+    areaEntries,
     categoryFilters,
-    hiddenWebFilters,
     search,
-    showHiddenEntries,
     statusFilter,
     typeFilter,
   ]);
 
   function toggleCategoryFilter(category: CategoryFilter) {
     setCategoryFilters((current) => {
-      const withoutOverlappingWebFilters =
-        category === "book:web_fiction"
-          ? current.filter((item) => !item.startsWith("web:"))
-          : category.startsWith("web:")
-            ? current.filter((item) => item !== "book:web_fiction")
-            : current;
-      return withoutOverlappingWebFilters.includes(category)
-        ? withoutOverlappingWebFilters.filter((item) => item !== category)
-        : [...withoutOverlappingWebFilters, category];
+      return current.includes(category)
+        ? current.filter((item) => item !== category)
+        : [...current, category];
     });
   }
 
-  const settingsHiddenEntryCount = useMemo(
-    () =>
-      entries.filter((entry) =>
-        entryMatchesHiddenFilter(entry, settingsHiddenDraft),
-      ).length,
-    [entries, settingsHiddenDraft],
-  );
-
-  const summaryEntries = useMemo(
-    () =>
-      showHiddenEntries
-        ? entries
-        : entries.filter(
-            (entry) => !entryMatchesHiddenFilter(entry, hiddenWebFilters),
-          ),
-    [entries, hiddenWebFilters, showHiddenEntries],
-  );
+  const summaryEntries = areaEntries;
 
   const stats = useMemo(
     () => ({
@@ -2386,7 +2260,7 @@ export function MediaJournal() {
     isLightNovelForm ? form.currentUnits : form.segmentCurrentUnits,
     form.segmentTotalUnits,
   );
-  const computedProgress =
+  const calculatedProgress =
     isLightNovelForm
       ? calculateSegmentedProgress(
           totalVolumes,
@@ -2408,10 +2282,14 @@ export function MediaJournal() {
         : form.mediaType === "book" && form.progressMode === "percent"
       ? Math.min(100, oneDecimalFromForm(form.manualProgressPercent))
       : calculateProgress(form.movieMode, totalUnits, currentUnits);
-  const automaticStatus = deriveStatus(
-    computedProgress,
-    form.status === "abandoned",
-  );
+  const computedProgress =
+    form.status === "completed" ? 100 : calculatedProgress;
+  const automaticStatus =
+    form.status === "abandoned"
+      ? "abandoned"
+      : form.status === "completed"
+        ? "completed"
+        : deriveStatus(calculatedProgress, false);
   const isCinema =
     form.mediaType === "movie" && form.movieMode === "cinema";
   const recordCurrentUnits =
@@ -2435,7 +2313,7 @@ export function MediaJournal() {
           recordForm.segmentTotalUnits,
         )
       : 0;
-  const recordProgress =
+  const calculatedRecordProgress =
     selected && recordForm
       ? selected.mediaType === "book" &&
         selected.bookCategory === "light_novel"
@@ -2466,9 +2344,15 @@ export function MediaJournal() {
             recordCurrentUnits,
           )
       : 0;
-  const recordStatus =
-    recordForm &&
-    deriveStatus(recordProgress, recordForm.status === "abandoned");
+  const recordProgress =
+    recordForm?.status === "completed" ? 100 : calculatedRecordProgress;
+  const recordStatus = recordForm
+    ? recordForm.status === "abandoned"
+      ? "abandoned"
+      : recordForm.status === "completed"
+        ? "completed"
+        : deriveStatus(calculatedRecordProgress, false)
+    : null;
   const activeThought =
     selected?.notes.find((note) => note.id === activeThoughtId) || null;
   const thoughtEditCurrentUnits =
@@ -2530,7 +2414,14 @@ export function MediaJournal() {
 
   function openCreate() {
     setEditing(null);
-    setForm(emptyForm());
+    const nextForm = emptyForm();
+    if (archiveArea === "romance") {
+      nextForm.mediaType = "book";
+      nextForm.bookCategory = "web_fiction";
+      nextForm.webFictionType = "bg";
+      nextForm.progressUnit = "chapter";
+    }
+    setForm(nextForm);
     setMovieLookupQuery("");
     setMovieLookupResults([]);
     setMovieLookupMessage("");
@@ -2852,6 +2743,14 @@ export function MediaJournal() {
       setError("请先选择漫画按话或按卷记录。");
       return;
     }
+    if (
+      archiveArea === "romance" &&
+      form.webFictionType !== "bg" &&
+      form.webFictionType !== "danmei"
+    ) {
+      setError("请先选择言情或耽美。");
+      return;
+    }
     setSaving(true);
     try {
       const now = new Date().toISOString();
@@ -2891,7 +2790,9 @@ export function MediaJournal() {
           ? formSegmentProgress
           : 0;
       const progressText =
-        isLightNovelForm || isMangaForm || form.mediaType === "series"
+        form.status === "completed"
+          ? "已看完"
+          : isLightNovelForm || isMangaForm || form.mediaType === "series"
           ? makeSegmentedProgressText(
               isLightNovelForm
                 ? "volume"
@@ -3059,8 +2960,11 @@ export function MediaJournal() {
           ? 0
           : numberFromForm(recordForm.segmentTotalUnits)
         : 0;
-      const progressText = segmented
-        ? makeSegmentedProgressText(
+      const progressText =
+        recordForm.status === "completed"
+          ? "已看完"
+          : segmented
+          ? makeSegmentedProgressText(
             lightNovel
               ? "volume"
               : manga
@@ -3072,7 +2976,7 @@ export function MediaJournal() {
             segmentCurrentUnits,
             recordSegmentProgress,
           )
-        : makeProgressText(
+          : makeProgressText(
             selected.mediaType,
             selected.movieMode,
             selected.progressUnit,
@@ -3429,6 +3333,24 @@ export function MediaJournal() {
           </div>
           <p>通过 AirDrop 数据包在设备间合并记录。</p>
         </div>
+        <button
+          aria-label={
+            archiveArea === "romance"
+              ? "返回主书架"
+              : "进入独立区"
+          }
+          className={`archive-area-switch ${
+            archiveArea === "romance" ? "active" : ""
+          }`}
+          onClick={() =>
+            switchArchiveArea(archiveArea === "romance" ? "main" : "romance")
+          }
+          title={archiveArea === "romance" ? "返回主书架" : "独立区"}
+          type="button"
+        >
+          <span aria-hidden="true">🏳️‍🌈</span>
+          <strong>{archiveArea === "romance" ? "返回主书架" : "独立区"}</strong>
+        </button>
       </aside>
 
       <section className="content">
@@ -3439,7 +3361,11 @@ export function MediaJournal() {
               <input
                 aria-label="搜索记录"
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="搜索名称、作者、国家或平台"
+                placeholder={
+                  archiveArea === "romance"
+                    ? "搜索独立书架"
+                    : "搜索名称、作者、国家或平台"
+                }
                 type="search"
                 value={search}
               />
@@ -3484,8 +3410,8 @@ export function MediaJournal() {
             <div className="database-titlebar">
               <div>
                 <span className="date-kicker">LOCAL DATABASE</span>
-                <h1>书影音记录</h1>
-                <p>共 {entries.length} 条记录 · 当前保存在本地</p>
+                <h1>{archiveArea === "romance" ? "🌈 独立书架" : "书影音记录"}</h1>
+                <p>共 {areaEntries.length} 条记录 · 当前保存在本地</p>
               </div>
               <div className="database-summary">
                 <span><strong>{stats.active}</strong> 进行中</span>
@@ -3505,7 +3431,10 @@ export function MediaJournal() {
             <section className="records-section">
               <div className="database-toolbar">
                 <div className="view-tabs" aria-label="表格视图">
-                  {(["all", "book", "movie", "series"] as const).map((type) => (
+                  {(archiveArea === "romance"
+                    ? (["all"] as const)
+                    : (["all", "book", "movie", "series"] as const)
+                  ).map((type) => (
                     <button
                       className={typeFilter === type ? "active" : ""}
                       key={type}
@@ -3568,6 +3497,7 @@ export function MediaJournal() {
 
               {filteredEntries.length || loading ? (
                 <RecordTable
+                  area={archiveArea}
                   categoryFilters={categoryFilters}
                   entries={filteredEntries}
                   loading={loading}
@@ -3578,14 +3508,14 @@ export function MediaJournal() {
               ) : (
                 <div className="empty-table">
                   <strong>
-                    {entries.length ? "暂无符合条件的记录" : "还没有记录"}
+                    {areaEntries.length ? "暂无符合条件的记录" : "还没有记录"}
                   </strong>
                   <span>
-                    {entries.length
+                    {areaEntries.length
                       ? "可以清除筛选或更换关键词。"
                       : "新增一部作品后会显示在表格中。"}
                   </span>
-                  {entries.length ? (
+                  {areaEntries.length ? (
                     <button
                       onClick={() => {
                         setSearch("");
@@ -3607,9 +3537,9 @@ export function MediaJournal() {
             </section>
           </>
         ) : view === "calendar" ? (
-          <CalendarPage entries={entries} onOpen={openDetails} />
+          <CalendarPage entries={areaEntries} onOpen={openDetails} />
         ) : (
-          <InsightsPanel entries={entries} />
+          <InsightsPanel area={archiveArea} entries={areaEntries} />
         )}
       </section>
 
@@ -3721,85 +3651,6 @@ export function MediaJournal() {
               </button>
             </div>
             <form onSubmit={saveSettings}>
-              <section className="settings-section">
-                <div>
-                  <h3>隐藏书目类别</h3>
-                  <p>只影响首页表格，不会删除记录，也不影响统计图。</p>
-                </div>
-                <div className="hidden-filter-options">
-                  <button
-                    aria-pressed={settingsHiddenDraft.includes("all")}
-                    className={settingsHiddenDraft.includes("all") ? "active" : ""}
-                    onClick={() => toggleHiddenFilter("all")}
-                    type="button"
-                  >
-                    <i />
-                    全部网络小说
-                  </button>
-                  {(
-                    ["danmei", "bg", "gen", "other"] as Exclude<
-                      WebFictionType,
-                      ""
-                    >[]
-                  ).map((filter) => (
-                    <button
-                      aria-pressed={settingsHiddenDraft.includes(filter)}
-                      className={
-                        settingsHiddenDraft.includes(filter) ? "active" : ""
-                      }
-                      key={filter}
-                      onClick={() => toggleHiddenFilter(filter)}
-                      type="button"
-                    >
-                      <i />
-                      {filter === "danmei" ? "👬 " : ""}
-                      {webFictionTypeMeta[filter]}
-                    </button>
-                  ))}
-                </div>
-                <small>
-                  当前将隐藏：
-                  {settingsHiddenDraft.includes("all")
-                    ? "全部网络小说"
-                    : settingsHiddenDraft.length
-                      ? settingsHiddenDraft
-                          .map((filter) =>
-                            filter === "all"
-                              ? "全部网络小说"
-                              : webFictionTypeMeta[filter],
-                          )
-                          .join("、")
-                      : "无"}
-                </small>
-                <button
-                  aria-pressed={settingsShowHiddenDraft}
-                  className={
-                    settingsShowHiddenDraft
-                      ? "hidden-visibility-toggle active"
-                      : "hidden-visibility-toggle"
-                  }
-                  disabled={!settingsHiddenEntryCount}
-                  onClick={() =>
-                    setSettingsShowHiddenDraft((current) => !current)
-                  }
-                  type="button"
-                >
-                  <span aria-hidden="true">{settingsShowHiddenDraft ? "◉" : "○"}</span>
-                  <div>
-                    <strong>
-                      {settingsShowHiddenDraft
-                        ? "首页正在显示隐藏书目"
-                        : "显示隐藏书目"}
-                    </strong>
-                    <small>
-                      {settingsHiddenEntryCount
-                        ? `当前有 ${settingsHiddenEntryCount} 条隐藏记录`
-                        : "当前没有隐藏记录"}
-                    </small>
-                  </div>
-                </button>
-              </section>
-
               <section className="settings-section profile-settings-section">
                 <div>
                   <h3>用户</h3>
@@ -3890,21 +3741,31 @@ export function MediaJournal() {
               </button>
             </div>
             <form onSubmit={saveEntry}>
-              <div className="media-type-picker">
-                {(Object.keys(typeMeta) as MediaType[]).map((type) => (
-                  <button
-                    className={form.mediaType === type ? "active" : ""}
-                    key={type}
-                    onClick={() => changeMediaType(type)}
-                    type="button"
-                  >
-                    <span>{typeMeta[type].mark}</span>
-                    {typeMeta[type].label}
-                  </button>
-                ))}
-              </div>
+              {archiveArea === "romance" ? (
+                <div className="romance-editor-context">
+                  <span aria-hidden="true">🏳️‍🌈</span>
+                  <div>
+                    <strong>独立区</strong>
+                    <small>这里建立的条目只会显示在独立书架。</small>
+                  </div>
+                </div>
+              ) : (
+                <div className="media-type-picker">
+                  {(Object.keys(typeMeta) as MediaType[]).map((type) => (
+                    <button
+                      className={form.mediaType === type ? "active" : ""}
+                      key={type}
+                      onClick={() => changeMediaType(type)}
+                      type="button"
+                    >
+                      <span>{typeMeta[type].mark}</span>
+                      {typeMeta[type].label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
-              {form.mediaType === "book" && (
+              {archiveArea === "main" && form.mediaType === "book" && (
                 <div className="book-category-field">
                   <span>书籍分类</span>
                   <div className="book-category-grid">
@@ -3947,11 +3808,12 @@ export function MediaJournal() {
               )}
 
               {form.mediaType === "book" &&
-                form.bookCategory === "web_fiction" && (
+                form.bookCategory === "web_fiction" &&
+                archiveArea === "romance" && (
                   <div className="series-category-field web-fiction-type-field">
-                    <span>网络文学类型</span>
+                    <span>独立区分类</span>
                     <div>
-                      {(Object.keys(webFictionTypeMeta) as Exclude<WebFictionType, "">[]).map(
+                      {(["bg", "danmei"] as const).map(
                         (webType) => (
                           <button
                             className={form.webFictionType === webType ? "active" : ""}
@@ -3959,8 +3821,7 @@ export function MediaJournal() {
                             onClick={() => setForm({ ...form, webFictionType: webType })}
                             type="button"
                           >
-                            {webType === "danmei" ? "👬 " : ""}
-                            {webFictionTypeMeta[webType]}
+                            {webType === "danmei" ? "耽美" : "言情"}
                           </button>
                         ),
                       )}
@@ -4281,30 +4142,43 @@ export function MediaJournal() {
                       />
                       <strong>{statusMeta[automaticStatus]}</strong>
                       <small>
-                        {automaticStatus === "abandoned"
+                        {form.status === "abandoned" || form.status === "completed"
                           ? "手动标记"
                           : "根据进度自动同步"}
                       </small>
                     </div>
-                    <button
-                      className={
-                        form.status === "abandoned" ? "active" : ""
-                      }
-                      onClick={() =>
-                        setForm({
-                          ...form,
-                          status:
-                            form.status === "abandoned"
-                              ? deriveStatus(computedProgress, false)
-                              : "abandoned",
-                        })
-                      }
-                      type="button"
-                    >
-                      {form.status === "abandoned"
-                        ? "取消已弃"
-                        : "标记为已弃"}
-                    </button>
+                    <div className="status-manual-actions">
+                      <button
+                        className={form.status === "completed" ? "active" : ""}
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            status:
+                              form.status === "completed"
+                                ? deriveStatus(calculatedProgress, false)
+                                : "completed",
+                          })
+                        }
+                        type="button"
+                      >
+                        {form.status === "completed" ? "取消已看完" : "直接已看完"}
+                      </button>
+                      <button
+                        className={form.status === "abandoned" ? "active" : ""}
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            status:
+                              form.status === "abandoned"
+                                ? deriveStatus(calculatedProgress, false)
+                                : "abandoned",
+                          })
+                        }
+                        type="button"
+                      >
+                        {form.status === "abandoned" ? "取消已弃" : "标记为已弃"}
+                      </button>
+                    </div>
                   </div>
                   <label className="field">
                     <span>这次观看 / 阅读日期</span>
@@ -4661,7 +4535,7 @@ export function MediaJournal() {
               )}
             </button>
             <div className="detail-title">
-              <span className="eyebrow">{subtypeLabel(selected)}</span>
+              <span className="eyebrow">{subtypeLabel(selected, archiveArea)}</span>
               <div className="detail-title-row">
                 <span
                   aria-label={statusMeta[selected.status]}
@@ -4709,13 +4583,12 @@ export function MediaJournal() {
                   <dd>{seriesCategoryMeta[selected.seriesCategory]}</dd>
                 </div>
               )}
-              {selected.bookCategory === "web_fiction" && selected.webFictionType && (
+              {archiveArea === "romance" &&
+                selected.bookCategory === "web_fiction" &&
+                selected.webFictionType && (
                 <div>
-                  <dt>网络文学类型</dt>
-                  <dd>
-                    {selected.webFictionType === "danmei" ? "👬 " : ""}
-                    {webFictionTypeMeta[selected.webFictionType]}
-                  </dd>
+                  <dt>分类</dt>
+                  <dd>{romanceTypeLabel(selected.webFictionType)}</dd>
                 </div>
               )}
               {selected.webFictionType === "danmei" &&
@@ -5770,30 +5643,46 @@ export function MediaJournal() {
                     <span className={`title-status-dot ${recordStatus}`} />
                     <strong>{statusMeta[recordStatus]}</strong>
                     <small>
-                      {recordStatus === "abandoned"
+                      {recordForm.status === "abandoned" ||
+                      recordForm.status === "completed"
                         ? "手动标记"
                         : "根据进度自动同步"}
                     </small>
                   </div>
-                  <button
-                    className={
-                      recordForm.status === "abandoned" ? "active" : ""
-                    }
-                    onClick={() =>
-                      setRecordForm({
-                        ...recordForm,
-                        status:
-                          recordForm.status === "abandoned"
-                            ? deriveStatus(recordProgress, false)
-                            : "abandoned",
-                      })
-                    }
-                    type="button"
-                  >
-                    {recordForm.status === "abandoned"
-                      ? "取消已弃"
-                      : "标记为已弃"}
-                  </button>
+                  <div className="status-manual-actions">
+                    <button
+                      className={recordForm.status === "completed" ? "active" : ""}
+                      onClick={() =>
+                        setRecordForm({
+                          ...recordForm,
+                          status:
+                            recordForm.status === "completed"
+                              ? deriveStatus(calculatedRecordProgress, false)
+                              : "completed",
+                        })
+                      }
+                      type="button"
+                    >
+                      {recordForm.status === "completed"
+                        ? "取消已看完"
+                        : "直接已看完"}
+                    </button>
+                    <button
+                      className={recordForm.status === "abandoned" ? "active" : ""}
+                      onClick={() =>
+                        setRecordForm({
+                          ...recordForm,
+                          status:
+                            recordForm.status === "abandoned"
+                              ? deriveStatus(calculatedRecordProgress, false)
+                              : "abandoned",
+                        })
+                      }
+                      type="button"
+                    >
+                      {recordForm.status === "abandoned" ? "取消已弃" : "标记为已弃"}
+                    </button>
+                  </div>
                 </div>
                 <label className="field">
                   <span>观看 / 阅读日期</span>

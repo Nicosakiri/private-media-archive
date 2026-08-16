@@ -241,6 +241,38 @@ select:focus-visible {
   transform: rotate(18deg);
 }
 
+.archive-area-switch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 10px 12px;
+  background: var(--card);
+  color: var(--muted);
+  text-align: left;
+  transition: 160ms ease;
+}
+
+.archive-area-switch:hover,
+.archive-area-switch.active {
+  border-color: color-mix(in srgb, var(--progress-blue) 62%, var(--line));
+  background: color-mix(in srgb, var(--progress-blue) 12%, var(--card));
+  color: var(--ink);
+}
+
+.archive-area-switch span {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  font-size: 18px;
+}
+
+.archive-area-switch strong {
+  font-size: 11px;
+  font-weight: 650;
+}
+
 .content {
   min-width: 0;
   padding: 0 5vw 72px;
@@ -2091,6 +2123,28 @@ select:focus-visible {
   outline: none;
 }
 
+.world-map-region-marker {
+  cursor: help;
+  outline: none;
+}
+
+.world-map-region-marker .region-outline {
+  stroke: color-mix(in srgb, var(--progress-blue) 82%, var(--ink));
+  stroke-width: 1.1;
+  stroke-dasharray: 2 1.5;
+  vector-effect: non-scaling-stroke;
+  transition: filter 140ms ease, transform 140ms ease;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.world-map-region-marker:hover .region-outline,
+.world-map-region-marker:focus-visible .region-outline {
+  filter: brightness(1.16) saturate(1.1);
+  stroke-width: 1.4;
+  transform: scale(1.35);
+}
+
 .world-map-tooltip {
   position: absolute;
   z-index: 2;
@@ -2137,13 +2191,13 @@ select:focus-visible {
   width: 18px;
   height: 8px;
   border-radius: 2px;
-  background: var(--progress-blue);
+  background: rgb(151, 211, 255);
 }
 
-.world-map-legend i:nth-of-type(1) { opacity: 0.25; }
-.world-map-legend i:nth-of-type(2) { opacity: 0.45; }
-.world-map-legend i:nth-of-type(3) { opacity: 0.7; }
-.world-map-legend i:nth-of-type(4) { opacity: 1; }
+.world-map-legend i:nth-of-type(1) { background: rgb(52, 96, 149); }
+.world-map-legend i:nth-of-type(2) { background: rgb(82, 132, 184); }
+.world-map-legend i:nth-of-type(3) { background: rgb(116, 172, 220); }
+.world-map-legend i:nth-of-type(4) { background: rgb(151, 211, 255); }
 
 .unmapped-countries {
   display: flex;
@@ -2313,6 +2367,36 @@ select:focus-visible {
   border-color: var(--ink);
   background: var(--ink);
   color: var(--paper);
+}
+
+.romance-editor-context {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 22px;
+  border: 1px solid color-mix(in srgb, var(--progress-blue) 45%, var(--line));
+  border-radius: 11px;
+  padding: 13px 15px;
+  background: color-mix(in srgb, var(--progress-blue) 9%, var(--field));
+}
+
+.romance-editor-context > span {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  font-size: 24px;
+}
+
+.romance-editor-context > div {
+  display: grid;
+  gap: 3px;
+}
+
+.romance-editor-context strong {
+  font-size: 12px;
+}
+
+.romance-editor-context small {
+  color: var(--muted);
+  font-size: 9px;
 }
 
 .book-category-field {
@@ -3164,7 +3248,12 @@ select:focus-visible {
   font-size: 9px;
 }
 
-.automatic-status-field > button {
+.status-manual-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.status-manual-actions button {
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 6px 8px;
@@ -3173,7 +3262,13 @@ select:focus-visible {
   font-size: 9px;
 }
 
-.automatic-status-field > button.active {
+.status-manual-actions button:first-child.active {
+  border-color: var(--progress-green);
+  background: color-mix(in srgb, var(--progress-green) 12%, var(--card));
+  color: var(--progress-green);
+}
+
+.status-manual-actions button:last-child.active {
   border-color: #e05252;
   background: color-mix(in srgb, #e05252 12%, var(--card));
   color: #e05252;
@@ -4173,7 +4268,7 @@ select:focus-visible {
   }
 
   .sidebar {
-    position: static;
+    position: relative;
     display: block;
     width: auto;
     height: auto;
@@ -4210,6 +4305,20 @@ select:focus-visible {
 
   .side-nav em,
   .sidebar-note {
+    display: none;
+  }
+
+  .archive-area-switch {
+    position: fixed;
+    left: 20px;
+    bottom: 20px;
+    z-index: 10;
+    width: auto;
+    margin: 0;
+    padding: 7px 9px;
+  }
+
+  .archive-area-switch strong {
     display: none;
   }
 
